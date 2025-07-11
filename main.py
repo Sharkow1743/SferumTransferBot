@@ -15,7 +15,7 @@ colorama.just_fix_windows_console()
 # Настройка
 startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
 endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
-botMsg = "Я - бот."
+botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
 
 # Инициализация
 
@@ -38,6 +38,7 @@ def fetch_and_forward_messages():
             response = api.messages.get_history(peer_id=vkChatId, count=10, offset=0)
             response = response['response']
         except Exception as e:
+            print(f"Error fetching messages: {e}")
             time.sleep(5)
             continue
         
@@ -54,11 +55,23 @@ def fetch_and_forward_messages():
                         senderProfile = profile
                 forward_message_to_group(message, last_message_sender, senderProfile)
                 last_message_sender = message['from_id']
-            msgId = message['text'].splitlines()[-1][len(botMsg)+4:].strip()
-            if message['text'].startswith("#") and msgId in sentMessages:
-                msg = sentMessages[msgId]
-                sentMessages.pop(msgId)
-                bot.reply_to(msg, "Отправлено")
+            
+            # More robust handling of bot message replies
+            if message['text'].startswith("#"):
+                try:
+                    lines = message['text'].splitlines()
+                    if len(lines) > 0:
+                        last_line = lines[-1]
+                        if botMsg in last_line:
+                            msgId = last_line[len(botMsg)+4:].strip()
+                            if msgId in sentMessages:
+                                msg = sentMessages[msgId]
+                                sentMessages.pop(msgId)
+                                bot.reply_to(msg, "Отправлено")
+                except Exception as e:
+                    print(f"Error processing bot message: {e}")
+                    continue
+                    
         time.sleep(5)
 
 def forward_message_to_group(message, last_message_sender, senderProfile):
@@ -80,6 +93,8 @@ def forward_message_to_group(message, last_message_sender, senderProfile):
             docUrl = attachment["doc"]["url"]
             doc = requests.get(docUrl).content
             bot.send_document(chatId, doc, visible_file_name=attachment["doc"]["title"])
+        elif type == "video":
+            text = "[Видео]\n" + text
 
         
             
@@ -152,10 +167,14 @@ polling_thread.start()
 
 print(Fore.YELLOW)
 print("The bot is running.")
-print("Enter 'exit' to shutdown.")
+print("Enter 'exit' or ^c to shutdown.")
 print(Style.RESET_ALL)
 
-while True:
-    if str(input()) == "exit":
-        bot.stop_polling()
-        os._exit(0)
+try:
+    while True:
+        if str(input()) == "exit":
+            bot.stop_polling()
+            os._exit(0)
+except KeyboardInterrupt:
+    bot.stop_polling()
+    os._exit(0)
