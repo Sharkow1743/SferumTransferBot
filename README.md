@@ -96,3 +96,5 @@ https://web.telegram.org/a/#id_вашей_группы
 ```bash
 python main.py
 ```
+
+## [sferumAPI](https://github.com/l2700l/SferumAPI)
