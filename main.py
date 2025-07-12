@@ -1,3 +1,5 @@
+import logger
+logger.setup_logger()
 import SferumAPI
 import telebot
 from datetime import datetime, time as t
@@ -9,14 +11,14 @@ import threading
 import colorama
 from colorama import Fore, Back, Style
 import logging
-from logging.handlers import RotatingFileHandler
 import json
+import data_handler
 
 colorama.init()
 colorama.just_fix_windows_console()
 
 # Настройка
-startTime = t(0,0) # Время после которого можно отправлять сообщения в сферум
+startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
 endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
 botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
 
@@ -28,81 +30,21 @@ token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
 sentMessages = {}
 last_message_sender = None
+msgs = data_handler.load('msgs') or {} #VK id:TG id
 
 api = SferumAPI.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
 
-# Инициализация логгера
-def setup_logger():
-    log_file = 'bot.log'
-    api_log_file = 'api_responses.log'  # New file for API responses
-    
-    # Clear log files if they exist
-    for file_path in [log_file, api_log_file]:
-        try:
-            with open(file_path, 'w'):
-                pass  # This clears the file contents
-        except IOError as e:
-            print(f"Warning: Could not clear log file {file_path} - {e}")
 
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)  # Set to lowest level for handlers to filter
-    
-    # Main logger formatter
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    
-    # API response logger formatter (simpler format)
-    api_formatter = logging.Formatter('%(asctime)s - %(message)s')
-    
-    # Main log file handler (as before)
-    file_handler = RotatingFileHandler(
-        log_file, 
-        maxBytes=1*1024*1024,
-        backupCount=1,
-        encoding='utf-8'
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.DEBUG)
-    logger.addHandler(file_handler)
-    
-    # Console handler (as before)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.INFO)
-    logger.addHandler(console_handler)
-    
-    # New handler for API responses (separate file)
-    api_handler = RotatingFileHandler(
-        api_log_file,
-        maxBytes=1*1024*1024,
-        backupCount=1,
-        encoding='utf-8'
-    )
-    api_handler.setFormatter(api_formatter)
-    api_handler.setLevel(logging.INFO)  # We'll use INFO level for API responses
-    api_handler.addFilter(lambda record: record.name == 'api_logger')  # Only log API responses
-    
-    # Create a separate logger for API responses
-    api_logger = logging.getLogger('api_logger')
-    api_logger.setLevel(logging.INFO)
-    api_logger.addHandler(api_handler)
-    api_logger.propagate = False  # Prevent propagation to root logger
-    
-    # Suppress verbose logs from libraries (as before)
-    logging.getLogger("requests").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("telebot").setLevel(logging.WARNING)
-    
-    return logger, api_logger  # Return both loggers
 
 # Get both loggers when initializing
-logger, api_logger = setup_logger()
+logger = logging.getLogger()
+api_logger = logging.getLogger("api_logger")
 
 # Then modify your fetch_and_forward_messages function to log API responses:
 def fetch_and_forward_messages():
-    last_message_id = load_last_message_id()
+    last_message_id = data_handler.load('msgId')
     logger.info("Starting message fetcher")
-    
     global api
     global last_message_sender
     while True:
@@ -124,9 +66,9 @@ def fetch_and_forward_messages():
                 error_code = response['error']['error_code']
                 if error_code == 5:
                     api = SferumAPI.SferumAPI(remixdsid=remixdsid)
-                    raise RuntimeWarning('Auth token has expired')
+                    raise requests.HTTPError('Auth token has expired')
                 else:
-                    raise RuntimeWarning(response['error']['error_msg'])
+                    raise requests.HTTPError(response['error']['error_msg'])
             
         except Exception as e:
             logger.error(f"Error fetching messages - {type(e).__name__}: {str(e)}")
@@ -140,7 +82,7 @@ def fetch_and_forward_messages():
             if last_message_id is None or message['id'] > last_message_id and not message['text'].startswith("#"):
                 bot.send_chat_action(chatId, "typing")
                 last_message_id = message['id']
-                save_last_message_id(last_message_id)
+                data_handler.save('msgId', last_message_id)
                 senderProfile = None
                 for profile in response['profiles']:
                     if message['from_id'] == profile['id']:
@@ -160,6 +102,7 @@ def fetch_and_forward_messages():
                                 msg = sentMessages[msgId]
                                 sentMessages.pop(msgId)
                                 bot.reply_to(msg, "Отправлено")
+                                msgs[message['id']] = msg.id
                                 last_message_sender = None
                                 logger.info(f"Confirmed delivery of message {msgId}")
                 except Exception as e:
@@ -177,52 +120,38 @@ def forward_message_to_group(message, last_message_sender, senderProfile):
             bot.send_message(chatId, senderName + " написа" + ("ла" if senderProfile['sex'] == 1 else "л") + ":")
         media = []
         for i, attachment in enumerate(message["attachments"]):
-            type = attachment["type"]
-            if type == "photo":
+            attachment_type = attachment["type"]
+            if attachment_type == "photo":
                 imgUrl = attachment["photo"]["sizes"][-1]["url"]
                 img = requests.get(imgUrl).content
                 if i == 0:
                     media.append(telebot.types.InputMediaPhoto(img, text))
                 else:
                     media.append(telebot.types.InputMediaPhoto(img))
-            elif type == "doc":
+            elif attachment_type == "doc":
                 docUrl = attachment["doc"]["url"]
                 doc = requests.get(docUrl).content
                 bot.send_document(chatId, doc, visible_file_name=attachment["doc"]["title"])
                 logger.info(f"Sent document: {attachment['doc']['title']}")
-            elif type == "video":
+            elif attachment_type == "video":
                 text = "[Видео]\n" + text
 
+        reply = None
+        if 'reply_message' in message and message['reply_message']['id'] in msgs:
+            reply = msgs[message['reply_message']['id']]
+
+        tgMsg = None
         if len(media) > 0:
-            bot.send_media_group(chatId, media)
+            tgMsg = bot.send_media_group(chatId, media, reply_to_message_id=reply)
             logger.info(f"Sent media group with {len(media)} items")
         elif text and text != "":
-            bot.send_message(chatId, text)
+            tgMsg = bot.send_message(chatId, text, reply_to_message_id=reply)
             logger.info(f"Sent text message: {text[:50]}{"..." if len(text) > 50 else ""}")
+
+        if tgMsg.id and not tgMsg.id in msgs:
+            msgs[message['id']] = tgMsg.id
     except Exception as e:
         logger.error(f"Error forwarding message {message.get('id', 'unknown')} - {type(e).__name__}: {str(e)}")
-        logger.debug("Full error details:", exc_info=True)
-
-def load_last_message_id():
-    try:
-        with open("last_message_id.txt", "r") as f:
-            last_message_id = f.read().strip() 
-            return int(last_message_id) if last_message_id else None
-    except FileNotFoundError:
-        logger.warning("last_message_id.txt not found, starting from scratch")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading last message ID - {type(e).__name__}: {str(e)}")
-        logger.debug("Full error details:", exc_info=True)
-        return None
-
-def save_last_message_id(message_id):
-    try:
-        with open("last_message_id.txt", "w") as f:
-            f.write(str(message_id))
-        logger.debug(f"Saved last message ID: {message_id}")
-    except Exception as e:
-        logger.error(f"Error saving last message ID - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
 
 @bot.message_handler(['send'])
@@ -240,7 +169,7 @@ def send_handler(msg):
             sysPart = f"# {botMsg} @{msg.id}"
 
             text = f"# {username} написал(-а):\n{msg.text[5:]}\n{sysPart}"
-            
+
             try:
                 api.messages.send_message(peer_id=vkChatId, text=text)
                 logger.info(f"Message {msg.id} sent to Sferum")
@@ -292,13 +221,17 @@ polling_thread.start()
 logger.info("Bot started successfully")
 print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
 
+def shutdown():
+    bot.stop_polling()
+    data_handler.save('msgs', msgs)
+    os._exit(0)
+
 try:
     while True:
         if str(input()) == "exit":
             logger.info("Shutdown command received")
-            bot.stop_polling()
-            os._exit(0)
+            shutdown()
+
 except KeyboardInterrupt:
     logger.info("Shutdown by keyboard interrupt")
-    bot.stop_polling()
-    os._exit(0)
+    shutdown()
