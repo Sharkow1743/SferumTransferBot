@@ -16,7 +16,7 @@ colorama.init()
 colorama.just_fix_windows_console()
 
 # Настройка
-startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
+startTime = t(0,0) # Время после которого можно отправлять сообщения в сферум
 endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
 botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
 
@@ -27,6 +27,7 @@ chatId = os.getenv('TG_CHAT_ID')
 token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
 sentMessages = {}
+last_message_sender = None
 
 api = SferumAPI.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
@@ -99,10 +100,11 @@ logger, api_logger = setup_logger()
 
 # Then modify your fetch_and_forward_messages function to log API responses:
 def fetch_and_forward_messages():
-    last_message_sender = None
     last_message_id = load_last_message_id()
     logger.info("Starting message fetcher")
     
+    global api
+    global last_message_sender
     while True:
         try:
             response = api.messages.get_history(peer_id=vkChatId, count=10, offset=0)
@@ -113,7 +115,18 @@ def fetch_and_forward_messages():
             except Exception as e:
                 api_logger.error(f"Could not log API response: {str(e)}")
             
-            response = response['response']
+            if 'response' in response:
+                response = response['response']
+                if 'items' not in response:
+                    logger.error("Response does not contain 'items'")
+                    continue
+            elif 'error' in response:
+                error_code = response['error']['error_code']
+                if error_code == 5:
+                    api = SferumAPI.SferumAPI(remixdsid=remixdsid)
+                    raise RuntimeWarning('Auth token has expired')
+                else:
+                    raise RuntimeWarning(response['error']['error_msg'])
             
         except Exception as e:
             logger.error(f"Error fetching messages - {type(e).__name__}: {str(e)}")
@@ -147,6 +160,7 @@ def fetch_and_forward_messages():
                                 msg = sentMessages[msgId]
                                 sentMessages.pop(msgId)
                                 bot.reply_to(msg, "Отправлено")
+                                last_message_sender = None
                                 logger.info(f"Confirmed delivery of message {msgId}")
                 except Exception as e:
                     logger.error(f"Error processing bot message - {type(e).__name__}: {str(e)}")
@@ -239,6 +253,11 @@ def send_handler(msg):
     except Exception as e:
         logger.error(f"Error in send_handler - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
+
+@bot.message_handler(func=lambda m: True)
+def messages_handle(msg):
+    global last_message_sender
+    last_message_sender = None
 
 def run_fetcher():
     try:
