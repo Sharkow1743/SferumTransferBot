@@ -2,6 +2,4 @@ colorama==0.4.6
 pyTelegramBotAPI==4.27.0
 python-dotenv==1.1.1
 Requests==2.32.4
-SferumAPI==0.1.1
-websockets>=10.0
-json2python_models>=0.3.1
+SferumBridge==1.0.1
