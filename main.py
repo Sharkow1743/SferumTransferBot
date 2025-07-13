@@ -1,6 +1,5 @@
 import logger
 logger.setup_logger()
-import SferumAPI
 import telebot
 from datetime import datetime, time as t
 import time
@@ -13,14 +12,16 @@ from colorama import Fore, Back, Style
 import logging
 import json
 import data_handler
+import SferumBridge
 
 colorama.init()
 colorama.just_fix_windows_console()
 
 # Настройка
-startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
+startTime = t(0,0) # Время после которого можно отправлять сообщения в сферум
 endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
 botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
+botChr = "⫻"
 
 load_dotenv()
 
@@ -28,14 +29,12 @@ vkChatId = os.getenv('VK_CHAT_ID')
 chatId = os.getenv('TG_CHAT_ID')
 token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
-sentMessages = {}
+botMsgs = []
 last_message_sender = None
 msgs = data_handler.load('msgs') or {} #VK id:TG id
 
-api = SferumAPI.SferumAPI(remixdsid=remixdsid)
+api = SferumBridge.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
-
-
 
 # Get both loggers when initializing
 logger = logging.getLogger()
@@ -49,7 +48,7 @@ def fetch_and_forward_messages():
     global last_message_sender
     while True:
         try:
-            response = api.messages.get_history(peer_id=vkChatId, count=10, offset=0)
+            response = api.get_history(peer_id=vkChatId, count=10)
             
             # Log the API response to the separate file
             try:
@@ -57,29 +56,16 @@ def fetch_and_forward_messages():
             except Exception as e:
                 api_logger.error(f"Could not log API response: {str(e)}")
             
-            if 'response' in response:
-                response = response['response']
-                if 'items' not in response:
-                    logger.error("Response does not contain 'items'")
-                    continue
-            elif 'error' in response:
-                error_code = response['error']['error_code']
-                if error_code == 5:
-                    api = SferumAPI.SferumAPI(remixdsid=remixdsid)
-                    raise requests.HTTPError('Auth token has expired')
-                else:
-                    raise requests.HTTPError(response['error']['error_msg'])
-            
         except Exception as e:
             logger.error(f"Error fetching messages - {type(e).__name__}: {str(e)}")
             logger.debug("Full error details:", exc_info=True)
             time.sleep(5)
             continue
         
-        messages = sorted(response['items'], key=lambda msg: msg['id'])
+        messages = response['items']
         
         for message in messages:
-            if last_message_id is None or message['id'] > last_message_id and not message['text'].startswith("#"):
+            if last_message_id is None or message['id'] > last_message_id and not message['text'].startswith(botChr):
                 bot.send_chat_action(chatId, "typing")
                 last_message_id = message['id']
                 data_handler.save('msgId', last_message_id)
@@ -90,25 +76,6 @@ def fetch_and_forward_messages():
                 forward_message_to_group(message, last_message_sender, senderProfile)
                 last_message_sender = message['from_id']
                 logger.info(f"Forwarded message {message['id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
-            
-            if message['text'].startswith("#"):
-                try:
-                    lines = message['text'].splitlines()
-                    if len(lines) > 0:
-                        last_line = lines[-1]
-                        if botMsg in last_line:
-                            msgId = last_line[len(botMsg)+4:].strip()
-                            if msgId in sentMessages:
-                                msg = sentMessages[msgId]
-                                sentMessages.pop(msgId)
-                                bot.reply_to(msg, "Отправлено")
-                                msgs[message['id']] = msg.id
-                                last_message_sender = None
-                                logger.info(f"Confirmed delivery of message {msgId}")
-                except Exception as e:
-                    logger.error(f"Error processing bot message - {type(e).__name__}: {str(e)}")
-                    logger.debug("Full error details:", exc_info=True)
-                    continue
                     
         time.sleep(5)
 
@@ -146,10 +113,10 @@ def forward_message_to_group(message, last_message_sender, senderProfile):
             logger.info(f"Sent media group with {len(media)} items")
         elif text and text != "":
             tgMsg = bot.send_message(chatId, text, reply_to_message_id=reply)
-            logger.info(f"Sent text message: {text[:50]}{"..." if len(text) > 50 else ""}")
+            logger.info(f"Sent text message: {text[:50]}{"..." if len(text) > 50 else ""}".replace("\n","\\n"))
 
         if tgMsg.id and not tgMsg.id in msgs:
-            msgs[message['id']] = tgMsg.id
+            msgs[message['conversation_message_id']] = tgMsg.id
     except Exception as e:
         logger.error(f"Error forwarding message {message.get('id', 'unknown')} - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
@@ -159,20 +126,24 @@ def send_handler(msg):
     try:
         now = datetime.now().time()
         if now > startTime and now < endTime:
-            sentMessages[str(msg.id)] = msg
             logger.info(f"Received message to send from {msg.from_user.username} (ID: {msg.id})")
 
             firstName = msg.from_user.first_name
             lastName = msg.from_user.last_name if msg.from_user.last_name != None else ""
             username = f"{firstName} {lastName}"
             
-            sysPart = f"# {botMsg} @{msg.id}"
+            sysPart = f"{botChr} /{botMsg}/"
 
-            text = f"# {username} написал(-а):\n{msg.text[5:]}\n{sysPart}"
+            text = f"*{botChr} {username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
 
             try:
-                api.messages.send_message(peer_id=vkChatId, text=text)
-                logger.info(f"Message {msg.id} sent to Sferum")
+                response = api.send_message(peer_id=vkChatId, text=text, format=True)
+                if 'cmid' in response:
+                    logger.info(f"Message {msg.id} sent to Sferum")
+                    bot.reply_to(msg, 'Отправлено!')
+                elif 'error_code' in response:
+                    raise RuntimeError(response['error_msg'])
+                
             except Exception as e:
                 logger.error(f"Error sending message to Sferum - {type(e).__name__}: {str(e)}")
                 logger.debug("Full error details:", exc_info=True)
@@ -200,9 +171,6 @@ def run_fetcher():
     finally:
         logger.info("Fetcher stopped")
 
-fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
-fetcher_thread.start()
-
 def run_polling():
     try:
         logger.info("Starting polling thread")
@@ -215,23 +183,28 @@ def run_polling():
     finally:
         logger.info("Polling stopped")
 
-polling_thread = threading.Thread(target=run_polling, name="PollingThread")
-polling_thread.start()
+if __name__ == '__main__':
+    fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
+    fetcher_thread.start()
+    polling_thread = threading.Thread(target=run_polling, name="PollingThread")
+    polling_thread.start()
 
-logger.info("Bot started successfully")
-print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
+    logger.info("Bot started successfully")
+    print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
 
-def shutdown():
-    bot.stop_polling()
-    data_handler.save('msgs', msgs)
-    os._exit(0)
 
-try:
-    while True:
-        if str(input()) == "exit":
-            logger.info("Shutdown command received")
-            shutdown()
 
-except KeyboardInterrupt:
-    logger.info("Shutdown by keyboard interrupt")
-    shutdown()
+    def shutdown():
+        bot.stop_polling()
+        data_handler.save('msgs', msgs)
+        os._exit(0)
+
+    try:
+        while True:
+            if str(input()) == "exit":
+                logger.info("Shutdown command received")
+                shutdown()
+
+    except KeyboardInterrupt:
+        logger.info("Shutdown by keyboard interrupt")
+        shutdown()
