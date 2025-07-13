@@ -121,6 +121,9 @@ def forward_message_to_group(message, last_message_sender, senderProfile):
         logger.error(f"Error forwarding message {message.get('id', 'unknown')} - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
 
+def start():
+    data_handler
+
 @bot.message_handler(['send'])
 def send_handler(msg):
     try:
