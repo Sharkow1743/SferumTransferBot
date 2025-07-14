@@ -54,14 +54,16 @@ def fetch_and_forward_messages():
                 api_logger.info(f"API Response:\n{json.dumps(response, indent=2, ensure_ascii=False)}")
             except Exception as e:
                 api_logger.error(f"Could not log API response: {str(e)}")
-            
+
+            if 'items' in response:
+                messages = response['items']
+            elif 'error_msg' in response:
+                raise RuntimeError(response['error_msg'])
         except Exception as e:
             logger.error(f"Error fetching messages - {type(e).__name__}: {str(e)}")
             logger.debug("Full error details:", exc_info=True)
             time.sleep(5)
             continue
-        
-        messages = response['items']
         
         for message in messages:
             if last_message_id is None or message['conversation_message_id'] > last_message_id and not message['text'].startswith(botChr):
