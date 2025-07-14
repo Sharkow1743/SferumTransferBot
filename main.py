@@ -29,7 +29,6 @@ vkChatId = os.getenv('VK_CHAT_ID')
 chatId = os.getenv('TG_CHAT_ID')
 token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
-botMsgs = []
 last_message_sender = None
 msgs = data_handler.load('msgs') or {} #VK id:TG id
 
@@ -65,9 +64,9 @@ def fetch_and_forward_messages():
         messages = response['items']
         
         for message in messages:
-            if last_message_id is None or message['id'] > last_message_id and not message['text'].startswith(botChr):
+            if last_message_id is None or message['conversation_message_id'] > last_message_id and not message['text'].startswith(botChr):
                 bot.send_chat_action(chatId, "typing")
-                last_message_id = message['id']
+                last_message_id = message['conversation_message_id']
                 data_handler.save('msgId', last_message_id)
                 senderProfile = None
                 for profile in response['profiles']:
@@ -75,54 +74,102 @@ def fetch_and_forward_messages():
                         senderProfile = profile
                 forward_message_to_group(message, last_message_sender, senderProfile)
                 last_message_sender = message['from_id']
-                logger.info(f"Forwarded message {message['id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
+                logger.info(f"Forwarded message {message['conversation_message_id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
                     
         time.sleep(5)
 
-def forward_message_to_group(message, last_message_sender, senderProfile):
+def forward_message_to_group(message, last_message_sender, sender_profile):
     try:
-        senderName = f"{senderProfile['first_name']} {senderProfile['last_name']}"
-        text = message['text']
-        if last_message_sender is None or last_message_sender != message['from_id']:
-            bot.send_message(chatId, senderName + " написа" + ("ла" if senderProfile['sex'] == 1 else "л") + ":")
-        media = []
-        for i, attachment in enumerate(message["attachments"]):
+        # Извлекаем часто используемые значения
+        conversation_message_id = str(message['conversation_message_id'])
+        sender_first_name = sender_profile['first_name']
+        sender_last_name = sender_profile['last_name']
+        sender_sex = sender_profile['sex']
+        sender_id = message['from_id']
+        text_content = message.get('text', '')
+        attachments = message.get('attachments', [])
+        
+        # Формируем имя отправителя
+        sender_name = f"{sender_first_name} {sender_last_name}"
+        gender_suffix = "ла" if sender_sex == 1 else "л"
+        
+        # Проверяем, нужно ли показывать имя отправителя
+        if last_message_sender == None or last_message_sender != sender_id:
+            bot.send_message(chatId, f"{sender_name} написа{gender_suffix}:")
+        
+        # Обрабатываем вложения
+        media_items = []
+        for i, attachment in enumerate(attachments):
             attachment_type = attachment["type"]
+            
             if attachment_type == "photo":
-                imgUrl = attachment["photo"]["sizes"][-1]["url"]
-                img = requests.get(imgUrl).content
+                # Получаем фото с максимальным разрешением
+                photo_sizes = attachment["photo"]["sizes"]
+                largest_photo_url = photo_sizes[-1]["url"]
+                photo_content = requests.get(largest_photo_url).content
+                
+                # Первое фото содержит текст сообщения
                 if i == 0:
-                    media.append(telebot.types.InputMediaPhoto(img, text))
+                    media_items.append(
+                        telebot.types.InputMediaPhoto(photo_content, text_content))
                 else:
-                    media.append(telebot.types.InputMediaPhoto(img))
+                    media_items.append(
+                        telebot.types.InputMediaPhoto(photo_content))
+            
             elif attachment_type == "doc":
-                docUrl = attachment["doc"]["url"]
-                doc = requests.get(docUrl).content
-                bot.send_document(chatId, doc, visible_file_name=attachment["doc"]["title"])
-                logger.info(f"Sent document: {attachment['doc']['title']}")
+                # Отправляем документ отдельным сообщением
+                doc_url = attachment["doc"]["url"]
+                doc_title = attachment["doc"]["title"]
+                doc_content = requests.get(doc_url).content
+                
+                bot.send_document(
+                    chatId, 
+                    doc_content, 
+                    visible_file_name=doc_title)
+                logger.info(f"Sent document: {doc_title}")
+            
             elif attachment_type == "video":
-                text = "[Видео]\n" + text
-
-        reply = None
-        if 'reply_message' in message and message['reply_message']['id'] in msgs:
-            reply = msgs[message['reply_message']['id']]
-
-        tgMsg = None
-        if len(media) > 0:
-            tgMsg = bot.send_media_group(chatId, media, reply_to_message_id=reply)
-            logger.info(f"Sent media group with {len(media)} items")
-        elif text and text != "":
-            tgMsg = bot.send_message(chatId, text, reply_to_message_id=reply)
-            logger.info(f"Sent text message: {text[:50]}{"..." if len(text) > 50 else ""}".replace("\n","\\n"))
-
-        if tgMsg.id and not tgMsg.id in msgs:
-            msgs[message['conversation_message_id']] = tgMsg.id
+                text_content = "[Видео]\n" + text_content
+        
+        # Обрабатываем ответ на сообщение
+        reply_to_message_id = None
+        if 'reply_message' in message:
+            reply_conversation_id = int(message['reply_message']['conversation_message_id'])
+            if reply_conversation_id in msgs:
+                reply_to_message_id = msgs[reply_conversation_id]
+        
+        # Отправляем сообщение
+        telegram_message = None
+        if len(media_items) > 0:
+            telegram_message = bot.send_media_group(
+                chatId, 
+                media_items, 
+                reply_to_message_id=reply_to_message_id)
+            logger.info(f"Sent media group with {len(media_items)} items")
+        
+        elif text_content and text_content.strip():
+            telegram_message = bot.send_message(
+                chatId, 
+                text_content, 
+                reply_to_message_id=reply_to_message_id)
+            
+            # Логируем укороченный текст сообщения
+            log_text = text_content[:50] + ("..." if len(text_content) > 50 else "")
+            logger.info(f"Sent text message: {log_text.replace('\n', '\\n')}")
+        
+        # Сохраняем соответствие ID сообщений
+        if telegram_message and hasattr(telegram_message, 'id'):
+            if conversation_message_id not in msgs:
+                msgs[int(conversation_message_id)] = telegram_message.id
     except Exception as e:
-        logger.error(f"Error forwarding message {message.get('id', 'unknown')} - {type(e).__name__}: {str(e)}")
+        error_message = (f"Error forwarding message {message.get('conversation_message_id', 'unknown')} - "
+                         f"{type(e).__name__}: {str(e)}")
+        logger.error(error_message)
         logger.debug("Full error details:", exc_info=True)
 
 @bot.message_handler(['send'])
 def send_handler(msg):
+    global last_message_sender
     try:
         now = datetime.now().time()
         if now > startTime and now < endTime:
@@ -136,11 +183,14 @@ def send_handler(msg):
 
             text = f"*{botChr} {username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
 
+            replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
+
             try:
-                response = api.send_message(peer_id=vkChatId, text=text, format=True)
+                response = api.send_message(peer_id=vkChatId, text=text, format=True, reply_to_id=replyId)
                 if 'cmid' in response:
                     logger.info(f"Message {msg.id} sent to Sferum")
                     bot.reply_to(msg, 'Отправлено!')
+                    last_message_sender = None
                 elif 'error_code' in response:
                     raise RuntimeError(response['error_msg'])
                 
@@ -183,7 +233,16 @@ def run_polling():
     finally:
         logger.info("Polling stopped")
 
+def start():
+    data_handler.save('started', True)
+    data_handler.save('msgId', 0)
+    data_handler.save('msgs', {})
+    api.send_message(vkChatId, f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://t.me/%2BCKBai8TvrZM2NDg6)', format=True)
+
 if __name__ == '__main__':
+    if not data_handler.load('started'):
+        start()
+
     fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
     fetcher_thread.start()
     polling_thread = threading.Thread(target=run_polling, name="PollingThread")
@@ -191,8 +250,6 @@ if __name__ == '__main__':
 
     logger.info("Bot started successfully")
     print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
-
-
 
     def shutdown():
         bot.stop_polling()
