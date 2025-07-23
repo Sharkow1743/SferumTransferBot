@@ -29,8 +29,10 @@ vkChatId = os.getenv('VK_CHAT_ID')
 chatId = os.getenv('TG_CHAT_ID')
 token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
+admin_user_id = os.getenv('ADMIN_USER_ID')
 last_message_sender = None
 msgs = data_handler.load('msgs') or {} #VK id:TG id
+count = 200
 
 api = SferumBridge.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
@@ -45,9 +47,11 @@ def fetch_and_forward_messages():
     logger.info("Starting message fetcher")
     global api
     global last_message_sender
+    global count
     while True:
         try:
-            response = api.get_history(peer_id=vkChatId, count=10)
+            response = api.get_history(peer_id=vkChatId, count=count)
+            count = 20
             
             # Log the API response to the separate file
             try:
@@ -140,6 +144,11 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
             if reply_conversation_id in msgs:
                 reply_to_message_id = msgs[reply_conversation_id]
         
+        if 'fwd_messages' in message and len(message['fwd_messages']) > 0:
+            for fwd_message in message['fwd_messages']:
+                fwd_message['text'] = "Пересланно:\n" + fwd_message['text']
+                forward_message_to_group(fwd_message, last_message_sender, sender_profile)
+        
         # Отправляем сообщение
         telegram_message = None
         if len(media_items) > 0:
@@ -174,7 +183,7 @@ def send_handler(msg):
     global last_message_sender
     try:
         now = datetime.now().time()
-        if now > startTime and now < endTime:
+        if str(msg.from_user.id) == admin_user_id or (now > startTime and now < endTime):
             logger.info(f"Received message to send from {msg.from_user.username} (ID: {msg.id})")
 
             firstName = msg.from_user.first_name
@@ -183,9 +192,11 @@ def send_handler(msg):
             
             sysPart = f"{botChr} /{botMsg}/"
 
-            text = f"*{botChr} {username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
+            text = f"{botChr} *{username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
 
-            replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
+            replyId = None
+            if msg.reply_to_message:
+                replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
 
             try:
                 response = api.send_message(peer_id=vkChatId, text=text, format=True, reply_to_id=replyId)
@@ -254,16 +265,27 @@ if __name__ == '__main__':
     print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
 
     def shutdown():
+        logger.info("Shutdown...")
         bot.stop_polling()
         data_handler.save('msgs', msgs)
         os._exit(0)
 
     try:
         while True:
-            if str(input()) == "exit":
-                logger.info("Shutdown command received")
-                shutdown()
+            match str(input()).lower():
+                case "exit":
+                    shutdown()
+                case "stop":
+                    shutdown()
+                case "sendtg":
+                    msg = str(input())
+                    bot.send_message(chatId, "Бот написал:")
+                    bot.send_message(chatId, msg)
+                case "sendvk":
+                    msg = str(input())
+                    msg = f"{botChr} Бот написал:\n{msg}"
+                    api.send_message(vkChatId, msg)
 
     except KeyboardInterrupt:
-        logger.info("Shutdown by keyboard interrupt")
+        logger.debug("Shutdown by keyboard interrupt")
         shutdown()
