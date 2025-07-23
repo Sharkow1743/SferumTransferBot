@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 import threading
 import colorama
-from colorama import Fore, Back, Style
+from colorama import Fore, Style
 import logging
 import json
 import data_handler
@@ -19,9 +19,10 @@ colorama.just_fix_windows_console()
 
 # Настройка
 startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
-endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
+endTime = t(21,0) # Время после которого нельзя отправлять сообщения в сферум
 botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
-botChr = "⫻"
+botChr = "⫻" # Что бот добавляет к сообщениям чтобы определить сообщение от бота, которые не надо пересылать
+helloMsg = f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://telegram.org/)' # Что бот отправит при первом запуске
 
 load_dotenv()
 
@@ -31,8 +32,6 @@ token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
 admin_user_id = os.getenv('ADMIN_USER_ID')
 last_message_sender = None
-msgs = data_handler.load('msgs') or {} #VK id:TG id
-count = 200
 
 api = SferumBridge.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
@@ -47,7 +46,8 @@ def fetch_and_forward_messages():
     logger.info("Starting message fetcher")
     global api
     global last_message_sender
-    global count
+    
+    count = 200
     while True:
         try:
             response = api.get_history(peer_id=vkChatId, count=count)
@@ -203,6 +203,7 @@ def send_handler(msg):
                 if 'cmid' in response:
                     logger.info(f"Message {msg.id} sent to Sferum")
                     bot.reply_to(msg, 'Отправлено!')
+                    msgs[int(response['cmid'])] = msg.id
                     last_message_sender = None
                 elif 'error_code' in response:
                     raise RuntimeError(response['error_msg'])
@@ -250,11 +251,13 @@ def start():
     data_handler.save('started', True)
     data_handler.save('msgId', 0)
     data_handler.save('msgs', {})
-    api.send_message(vkChatId, f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://t.me/%2BCKBai8TvrZM2NDg6)', format=True)
+    api.send_message(vkChatId, helloMsg, format=True)
 
 if __name__ == '__main__':
     if not data_handler.load('started'):
         start()
+
+    msgs = data_handler.load('msgs') or {} #VK id:TG id
 
     fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
     fetcher_thread.start()
