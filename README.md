@@ -9,7 +9,7 @@
     - [x] Картинки
     - [x] Файлы
     - [ ] Видео
-    - [ ] Пересылания
+    - [x] Пересылания
     - [x] Ответы
     - [ ] Форматирование текста
 
@@ -20,7 +20,7 @@
     - [ ] Видео
     - [ ] Пересылания
     - [x] Ответы
-    - [ ] Форматирование текста
+    - [x] Форматирование текста
 
 ## Установка
 
@@ -46,6 +46,7 @@ VK_CHAT_ID=ваш_vk_chat_id
 TG_CHAT_ID=ваш_telegram_chat_id 
 TG_TOKEN=ваш_telegram_token 
 VK_COOKIE=ваш_vk_cookie
+ADMIN_USER_ID=ваш_id_в_телеграм(необязательно)
 ```
 
 #### 3.1 VK_CHAT_ID
@@ -98,5 +99,3 @@ https://web.telegram.org/a/#id_вашей_группы
 ```bash
 python main.py
 ```
-
-## [sferumAPI](https://github.com/l2700l/SferumAPI)

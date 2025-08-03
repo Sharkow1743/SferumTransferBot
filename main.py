@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 import threading
 import colorama
-from colorama import Fore, Back, Style
+from colorama import Fore, Style
 import logging
 import json
 import data_handler
@@ -19,9 +19,10 @@ colorama.just_fix_windows_console()
 
 # Настройка
 startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
-endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
+endTime = t(21,0) # Время после которого нельзя отправлять сообщения в сферум
 botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
-botChr = "⫻"
+botChr = "⫻" # Что бот добавляет к сообщениям чтобы определить сообщение от бота, которые не надо пересылать
+helloMsg = f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://telegram.org/)' # Что бот отправит при первом запуске
 
 load_dotenv()
 
@@ -29,8 +30,8 @@ vkChatId = os.getenv('VK_CHAT_ID')
 chatId = os.getenv('TG_CHAT_ID')
 token = os.getenv('TG_TOKEN')
 remixdsid = os.getenv('VK_COOKIE')
+admin_user_id = os.getenv('ADMIN_USER_ID')
 last_message_sender = None
-msgs = data_handler.load('msgs') or {} #VK id:TG id
 
 api = SferumBridge.SferumAPI(remixdsid=remixdsid)
 bot = telebot.TeleBot(token)
@@ -45,9 +46,12 @@ def fetch_and_forward_messages():
     logger.info("Starting message fetcher")
     global api
     global last_message_sender
+    
+    count = 200
     while True:
         try:
-            response = api.get_history(peer_id=vkChatId, count=10)
+            response = api.get_history(peer_id=vkChatId, count=count)
+            count = 20
             
             # Log the API response to the separate file
             try:
@@ -140,6 +144,11 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
             if reply_conversation_id in msgs:
                 reply_to_message_id = msgs[reply_conversation_id]
         
+        if 'fwd_messages' in message and len(message['fwd_messages']) > 0:
+            for fwd_message in message['fwd_messages']:
+                fwd_message['text'] = "Пересланно:\n" + fwd_message['text']
+                forward_message_to_group(fwd_message, last_message_sender, sender_profile)
+        
         # Отправляем сообщение
         telegram_message = None
         if len(media_items) > 0:
@@ -174,7 +183,7 @@ def send_handler(msg):
     global last_message_sender
     try:
         now = datetime.now().time()
-        if now > startTime and now < endTime:
+        if str(msg.from_user.id) == admin_user_id or (now > startTime and now < endTime):
             logger.info(f"Received message to send from {msg.from_user.username} (ID: {msg.id})")
 
             firstName = msg.from_user.first_name
@@ -183,15 +192,18 @@ def send_handler(msg):
             
             sysPart = f"{botChr} /{botMsg}/"
 
-            text = f"*{botChr} {username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
+            text = f"{botChr} *{username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
 
-            replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
+            replyId = None
+            if msg.reply_to_message:
+                replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
 
             try:
                 response = api.send_message(peer_id=vkChatId, text=text, format=True, reply_to_id=replyId)
                 if 'cmid' in response:
                     logger.info(f"Message {msg.id} sent to Sferum")
                     bot.reply_to(msg, 'Отправлено!')
+                    msgs[int(response['cmid'])] = msg.id
                     last_message_sender = None
                 elif 'error_code' in response:
                     raise RuntimeError(response['error_msg'])
@@ -239,11 +251,13 @@ def start():
     data_handler.save('started', True)
     data_handler.save('msgId', 0)
     data_handler.save('msgs', {})
-    api.send_message(vkChatId, f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://t.me/%2BCKBai8TvrZM2NDg6)', format=True)
+    api.send_message(vkChatId, helloMsg, format=True)
 
 if __name__ == '__main__':
     if not data_handler.load('started'):
         start()
+
+    msgs = data_handler.load('msgs') or {} #VK id:TG id
 
     fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
     fetcher_thread.start()
@@ -254,16 +268,27 @@ if __name__ == '__main__':
     print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
 
     def shutdown():
+        logger.info("Shutdown...")
         bot.stop_polling()
         data_handler.save('msgs', msgs)
         os._exit(0)
 
     try:
         while True:
-            if str(input()) == "exit":
-                logger.info("Shutdown command received")
-                shutdown()
+            match str(input()).lower():
+                case "exit":
+                    shutdown()
+                case "stop":
+                    shutdown()
+                case "sendtg":
+                    msg = str(input())
+                    bot.send_message(chatId, "Бот написал:")
+                    bot.send_message(chatId, msg)
+                case "sendvk":
+                    msg = str(input())
+                    msg = f"{botChr} Бот написал:\n{msg}"
+                    api.send_message(vkChatId, msg)
 
     except KeyboardInterrupt:
-        logger.info("Shutdown by keyboard interrupt")
+        logger.debug("Shutdown by keyboard interrupt")
         shutdown()
