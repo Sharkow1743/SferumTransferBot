@@ -1,269 +1,381 @@
-import logger
-logger.setup_logger()
-import telebot
-from datetime import datetime, time as t
-import time
-import requests
+# Standard Library Imports
 import os
-from dotenv import load_dotenv
+import sys
 import threading
-import colorama
-from colorama import Fore, Back, Style
 import logging
+import io
+from datetime import datetime, time as t
 import json
+import time
+
+# Third-party Imports
+import telebot
+import requests
+import colorama
+from dotenv import load_dotenv
+from telebot import types
+from colorama import Fore, Style
+import MaxBridge
+
+# Local Application Imports
 import data_handler
-import SferumBridge
+import logger
 
-colorama.init()
-colorama.just_fix_windows_console()
-
-# Настройка
-startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
-endTime = t(22,0) # Время после которого нельзя отправлять сообщения в сферум
-botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
-botChr = "⫻"
-
-load_dotenv()
-
-vkChatId = os.getenv('VK_CHAT_ID')
-chatId = os.getenv('TG_CHAT_ID')
-token = os.getenv('TG_TOKEN')
-remixdsid = os.getenv('VK_COOKIE')
-last_message_sender = None
-msgs = data_handler.load('msgs') or {} #VK id:TG id
-
-api = SferumBridge.SferumAPI(remixdsid=remixdsid)
-bot = telebot.TeleBot(token)
-
-# Get both loggers when initializing
-logger = logging.getLogger()
+logger.setup_logger()
 api_logger = logging.getLogger("api_logger")
 
-# Then modify your fetch_and_forward_messages function to log API responses:
-def fetch_and_forward_messages():
-    last_message_id = data_handler.load('msgId')
-    logger.info("Starting message fetcher")
-    global api
-    global last_message_sender
-    while True:
-        try:
-            response = api.get_history(peer_id=vkChatId, count=10)
-            
-            # Log the API response to the separate file
-            try:
-                api_logger.info(f"API Response:\n{json.dumps(response, indent=2, ensure_ascii=False)}")
-            except Exception as e:
-                api_logger.error(f"Could not log API response: {str(e)}")
+# --- Initial Setup ---
+colorama.init(autoreset=True)
+load_dotenv()
 
-            if 'items' in response:
-                messages = response['items']
-            elif 'error_msg' in response:
-                raise RuntimeError(response['error_msg'])
-        except Exception as e:
-            logger.error(f"Error fetching messages - {type(e).__name__}: {str(e)}")
-            logger.debug("Full error details:", exc_info=True)
-            time.sleep(5)
-            continue
-        
-        for message in messages:
-            if last_message_id is None or message['conversation_message_id'] > last_message_id and not message['text'].startswith(botChr):
-                bot.send_chat_action(chatId, "typing")
-                last_message_id = message['conversation_message_id']
-                data_handler.save('msgId', last_message_id)
-                senderProfile = None
-                for profile in response['profiles']:
-                    if message['from_id'] == profile['id']:
-                        senderProfile = profile
-                forward_message_to_group(message, last_message_sender, senderProfile)
-                last_message_sender = message['from_id']
-                logger.info(f"Forwarded message {message['conversation_message_id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
-                    
-        time.sleep(5)
+# --- Constants & Configuration ---
+# Time window during which messages can be sent from Telegram to Max
+START_TIME = t(7, 0)
+END_TIME = t(22, 0)
 
-def forward_message_to_group(message, last_message_sender, sender_profile):
+# Bot signature details to identify messages sent by this bridge
+BOT_MESSAGE_SIGNATURE = "Я - бот."
+BOT_MESSAGE_PREFIX = "⫻" # A unique character to prefix bot messages
+
+# --- Environment Variables ---
+try:
+    MAX_CHAT_ID = int(os.getenv('VK_CHAT_ID'))
+    TG_CHAT_ID = os.getenv('TG_CHAT_ID')
+    TG_TOKEN = os.getenv('TG_TOKEN')
+    MAX_AUTH_TOKEN = os.getenv('VK_COOKIE')
+    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN]):
+        raise ValueError("One or more environment variables are not set.")
+except (ValueError, TypeError) as e:
+    print(f"{Fore.RED}FATAL: Configuration error - {e}. Please check your .env file.{Style.RESET_ALL}")
+    sys.exit(1)
+
+
+# --- State and Globals ---
+# Maps Max message ID (str) to the corresponding Telegram message ID (int) for replies.
+# Loaded from and saved to a file by data_handler.
+msgs_map = data_handler.load('msgs') or {}
+
+# In-memory cache for user profiles to reduce API calls. {max_user_id: profile_dict}
+user_cache = {}
+
+# Stores the ID of the last user who sent a message to avoid repeating names.
+last_message_sender = None
+
+# --- API Initialization ---
+bot = telebot.TeleBot(TG_TOKEN, threaded=False) # threaded=False is often safer with manual threading
+api = None # Will be initialized in the main block
+
+# --- Core Logic: Max -> Telegram ---
+
+def get_sender_profile(sender_id: int) -> dict:
+    """
+    Fetches a user's profile from the Max API and caches it.
+    Returns a fallback profile if the API call fails.
+    """
+    global user_cache
+    if sender_id in user_cache:
+        return user_cache[sender_id]
+
     try:
-        # Извлекаем часто используемые значения
-        conversation_message_id = str(message['conversation_message_id'])
-        sender_first_name = sender_profile['first_name']
-        sender_last_name = sender_profile['last_name']
-        sender_sex = sender_profile['sex']
-        sender_id = message['from_id']
+        logging.info("Fetching profile for new user ID: %s", sender_id)
+        response = api.get_contact_details([sender_id])
+        api_logger.info(json.dumps(response, indent=4))
+        
+        if response and 'contacts' in response and response['contacts']:
+            profile = response['contacts'][0]
+            # Cache a simplified version of the profile
+            user_cache[sender_id] = {
+                'id': profile['id'],
+                'name': profile['names'][0]['name'],
+            }
+            return user_cache[sender_id]
+    except Exception as e:
+        logging.error("Could not fetch profile for ID %s: %s", sender_id, e, exc_info=True)
+
+    # Return a fallback profile if the API call fails or yields no data
+    return {'id': sender_id, 'name': f'User {sender_id}'}
+
+def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile: dict):
+    """
+    Formats and forwards a message from Max to the Telegram group.
+    Handles text, replies, and various attachments (photos, videos, docs, stickers).
+    """
+    try:
+        max_message_id = message.get('id')
+        sender_name = sender_profile.get('name')
+        sender_id = sender_profile.get('id')
         text_content = message.get('text', '')
-        attachments = message.get('attachments', [])
-        
-        # Формируем имя отправителя
-        sender_name = f"{sender_first_name} {sender_last_name}"
-        gender_suffix = "ла" if sender_sex == 1 else "л"
-        
-        # Проверяем, нужно ли показывать имя отправителя
-        if last_message_sender == None or last_message_sender != sender_id:
-            bot.send_message(chatId, f"{sender_name} написа{gender_suffix}:")
-        
-        # Обрабатываем вложения
-        media_items = []
-        for i, attachment in enumerate(attachments):
-            attachment_type = attachment["type"]
-            
-            if attachment_type == "photo":
-                # Получаем фото с максимальным разрешением
-                photo_sizes = attachment["photo"]["sizes"]
-                largest_photo_url = photo_sizes[-1]["url"]
-                photo_content = requests.get(largest_photo_url).content
-                
-                # Первое фото содержит текст сообщения
-                if i == 0:
-                    media_items.append(
-                        telebot.types.InputMediaPhoto(photo_content, text_content))
-                else:
-                    media_items.append(
-                        telebot.types.InputMediaPhoto(photo_content))
-            
-            elif attachment_type == "doc":
-                # Отправляем документ отдельным сообщением
-                doc_url = attachment["doc"]["url"]
-                doc_title = attachment["doc"]["title"]
-                doc_content = requests.get(doc_url).content
-                
-                bot.send_document(
-                    chatId, 
-                    doc_content, 
-                    visible_file_name=doc_title)
-                logger.info(f"Sent document: {doc_title}")
-            
-            elif attachment_type == "video":
-                text_content = "[Видео]\n" + text_content
-        
-        # Обрабатываем ответ на сообщение
-        reply_to_message_id = None
-        if 'reply_message' in message:
-            reply_conversation_id = int(message['reply_message']['conversation_message_id'])
-            if reply_conversation_id in msgs:
-                reply_to_message_id = msgs[reply_conversation_id]
-        
-        # Отправляем сообщение
-        telegram_message = None
-        if len(media_items) > 0:
-            telegram_message = bot.send_media_group(
-                chatId, 
-                media_items, 
-                reply_to_message_id=reply_to_message_id)
-            logger.info(f"Sent media group with {len(media_items)} items")
-        
-        elif text_content and text_content.strip():
-            telegram_message = bot.send_message(
-                chatId, 
-                text_content, 
-                reply_to_message_id=reply_to_message_id)
-            
-            # Логируем укороченный текст сообщения
-            log_text = text_content[:50] + ("..." if len(text_content) > 50 else "")
-            logger.info(f"Sent text message: {log_text.replace('\n', '\\n')}")
-        
-        # Сохраняем соответствие ID сообщений
-        if telegram_message and hasattr(telegram_message, 'id'):
-            if conversation_message_id not in msgs:
-                msgs[int(conversation_message_id)] = telegram_message.id
-    except Exception as e:
-        error_message = (f"Error forwarding message {message.get('conversation_message_id', 'unknown')} - "
-                         f"{type(e).__name__}: {str(e)}")
-        logger.error(error_message)
-        logger.debug("Full error details:", exc_info=True)
+        attachments = message.get('attaches', [])
 
-@bot.message_handler(['send'])
-def send_handler(msg):
+        # To avoid clutter, only show the sender's name if they are new or different
+        if prev_sender is None or prev_sender != sender_id:
+            bot.send_message(TG_CHAT_ID, f"*{sender_name}*:", parse_mode="Markdown")
+
+        # Determine if this message is a reply and find the TG message ID to reply to
+        reply_to_message_id = None
+        if 'replyTo' in message and message['replyTo'].get('messageId'):
+            replied_max_id = message['replyTo']['messageId']
+            reply_to_message_id = msgs_map.get(replied_max_id)
+            if reply_to_message_id:
+                 logging.info("Found corresponding TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
+
+        # --- ATTACHMENT PROCESSING LOGIC ---
+        tg_message_to_map = None # The TG message whose ID we'll save for future replies
+        caption_sent = False     # Flag to ensure message text is sent only once (as a caption)
+
+        if attachments:
+            logging.info("Processing message %s with %d attachments.", max_message_id, len(attachments))
+            media_group_items = []
+            
+            # 1. Categorize attachments to handle them correctly
+            for attach in attachments:
+                attach_type = attach.get('_type')
+                
+                match attach_type:
+                    case "PHOTO":
+                        url = attach.get('baseUrl')
+                        file_content = requests.get(url).content
+                        media_group_items.append(types.InputMediaPhoto(file_content))
+
+                    case "VIDEO":
+                        try:
+                            # Some APIs require an extra call to get the direct video URL
+                            video_info = api.send_command(83, {"videoId": attach.get('videoId'), "chatId": MAX_CHAT_ID, "messageId": max_message_id})
+                            url = video_info.get('MP4_1080') or video_info.get('MP4_720')
+                            if not url:
+                                logging.warning("No downloadable URL found for video in msg %s", max_message_id)
+                                continue
+
+                            logging.info("Downloading video for msg %s from: %s", max_message_id, url)
+
+                            headers = {
+                                'Host': 'vd526.okcdn.ru',
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                                'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+                                'Connection': 'keep-alive',
+                                'Sec-Fetch-Dest': 'video',
+                                'Sec-Fetch-Mode': 'no-cors',
+                                'Sec-Fetch-Site': 'cross-site',
+                            }
+                            
+                            cookies = { 'tstc': 'p' }
+
+                            with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=30) as r:
+                                r.raise_for_status()
+
+                                content_type = r.headers.get('content-type')
+                                if 'video' not in content_type:
+                                    logger.error(f"Server returned wrong content-type '{content_type}' for video, not downloading. Body: {r.text}")
+                                    continue
+                                
+                                video_buffer = io.BytesIO()
+                                
+                                for chunk in r.iter_content(chunk_size=8192):
+                                    video_buffer.write(chunk)
+                                
+                                video_buffer.seek(0)
+                            
+                            media_group_items.append(types.InputMediaVideo(video_buffer))
+                            
+                        except Exception as e:
+                            logging.error("Failed to process video attachment for msg %s: %s", max_message_id, e, exc_info=True)
+                
+                # TODO: Add handlers for other types like "FILE", "STICKER", etc. if needed.
+
+            # 2. Send grouped media (photos/videos)
+            if media_group_items:
+                # Attach the text content as a caption to the first item in the group
+                if text_content and not caption_sent:
+                    media_group_items[0].caption = text_content
+                    caption_sent = True
+
+                sent_messages = bot.send_media_group(
+                    TG_CHAT_ID, media_group_items,
+                    reply_to_message_id=reply_to_message_id,
+                    disable_notification=True
+                )
+                # Map the ID of the first message in the album for replies
+                tg_message_to_map = sent_messages[0]
+                logging.info("Sent %d items as a media group for Max msg %s.", len(media_group_items), max_message_id)
+
+        # 3. If there's text content that wasn't sent as a caption, send it now
+        if not caption_sent and text_content and text_content.strip():
+            tg_message_to_map = bot.send_message(
+                TG_CHAT_ID,
+                text_content,
+                reply_to_message_id=reply_to_message_id
+            )
+
+        # 4. Save the mapping from Max message ID to the new Telegram message ID
+        if tg_message_to_map:
+            msgs_map[max_message_id] = tg_message_to_map.message_id
+            logging.info("Successfully mapped Max message %s to TG message %s.", max_message_id, tg_message_to_map.message_id)
+
+    except Exception as e:
+        logging.error("Error in forward_max_message_to_group for Max msg %s: %s", message.get('id', 'unknown'), e, exc_info=True)
+
+
+def on_max_event(event_data: dict):
+    """
+    Callback function executed on every event from the Max WebSocket.
+    Filters for new messages in the target chat and forwards them.
+    """
+    global last_message_sender
+    api_logger.info(json.dumps(event_data, indent=4))
+
+    # We only care about new messages (opcode 128) that haven't been removed
+    if event_data.get("opcode") != 128 or event_data.get("status") == "REMOVED":
+        return
+
+    payload = event_data.get("payload", {})
+    message = payload.get("message", {})
+    
+    # Ignore messages not from our target chat or messages sent by the bot itself
+    if payload.get("chatId") != MAX_CHAT_ID or message.get('text', '').startswith(BOT_MESSAGE_PREFIX):
+        return
+    
+    bot.send_chat_action(TG_CHAT_ID, "typing")
+    
+    sender_id = message.get('sender')
+    sender_profile = get_sender_profile(sender_id)
+    
+    logging.info(
+        "Received Max message %s from '%s'. Spawning thread to forward.",
+        message.get('id'), sender_profile.get('name')
+    )
+
+    # Use a thread to forward the message to avoid blocking the WebSocket listener
+    forwarding_thread = threading.Thread(
+        target=forward_max_message_to_group,
+        args=(message, last_message_sender, sender_profile)
+    )
+    forwarding_thread.start()
+    
+    # Update the last sender to enable message chaining without name repetition
+    last_message_sender = sender_id
+
+# --- Core Logic: Telegram -> Max ---
+
+@bot.message_handler(commands=['send'])
+def send_handler(msg: types.Message):
+    """
+    Handles /send command in Telegram to forward a message to Max.
+    Constructs the message text and handles replies.
+    """
     global last_message_sender
     try:
+        # Enforce the time window for sending messages
         now = datetime.now().time()
-        if now > startTime and now < endTime:
-            logger.info(f"Received message to send from {msg.from_user.username} (ID: {msg.id})")
-
-            firstName = msg.from_user.first_name
-            lastName = msg.from_user.last_name if msg.from_user.last_name != None else ""
-            username = f"{firstName} {lastName}"
+        if not (START_TIME <= now <= END_TIME):
+            bot.reply_to(msg, f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
+            logging.warning(
+                "Message from '%s' blocked due to time restrictions. Current time: %s",
+                msg.from_user.username, now
+            )
+            return
             
-            sysPart = f"{botChr} /{botMsg}/"
+        logging.info("Received /send command from '%s' (TG Msg ID: %s)", msg.from_user.username, msg.message_id)
+        
+        # Extract text and user info for the message
+        text_to_send = msg.text[5:].strip()
+        if not text_to_send:
+            bot.reply_to(msg, "Нельзя отправить пустое сообщение.")
+            return
 
-            text = f"*{botChr} {username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
+        first_name = msg.from_user.first_name
+        last_name = msg.from_user.last_name or ""
+        username = f"{first_name} {last_name}".strip()
+        
+        # Format the message to clearly indicate it came from the Telegram bridge
+        sys_part = f"/{BOT_MESSAGE_SIGNATURE}/"
+        full_text = f"{BOT_MESSAGE_PREFIX} {username} написал(-а):\n{text_to_send}\n{sys_part}"
+        
+        # Find the Max message ID to reply to, if any
+        reply_to_max_id = None
+        if msg.reply_to_message:
+            tg_reply_id = msg.reply_to_message.message_id
+            # Invert the msgs_map to find the Max ID from the TG ID
+            for max_id, tg_id in msgs_map.items():
+                if tg_id == tg_reply_id:
+                    reply_to_max_id = max_id
+                    break
+        
+        api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_to_id=reply_to_max_id)
+        
+        bot.reply_to(msg, 'Отправлено!')
+        logging.info("Sent message from '%s' to Max. Replied to Max ID: %s", username, reply_to_max_id)
+        
+        # Reset last sender so the next Max message will show the sender's name
+        last_message_sender = None
 
-            replyId = list(msgs.keys())[list(msgs.values()).index(msg.reply_to_message.id)]
-
-            try:
-                response = api.send_message(peer_id=vkChatId, text=text, format=True, reply_to_id=replyId)
-                if 'cmid' in response:
-                    logger.info(f"Message {msg.id} sent to Sferum")
-                    bot.reply_to(msg, 'Отправлено!')
-                    last_message_sender = None
-                elif 'error_code' in response:
-                    raise RuntimeError(response['error_msg'])
-                
-            except Exception as e:
-                logger.error(f"Error sending message to Sferum - {type(e).__name__}: {str(e)}")
-                logger.debug("Full error details:", exc_info=True)
-        else:
-            bot.reply_to(msg, f"Можно отправлять сообщения только между {startTime} и {endTime}")
-            logger.warning(f"Message received outside allowed time window: {now}")
     except Exception as e:
-        logger.error(f"Error in send_handler - {type(e).__name__}: {str(e)}")
-        logger.debug("Full error details:", exc_info=True)
+        logging.error("Error in send_handler: %s", e, exc_info=True)
+        bot.reply_to(msg, 'Произошла ошибка при отправке.')
 
-@bot.message_handler(func=lambda m: True)
-def messages_handle(msg):
+@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'video', 'document', 'sticker'])
+def messages_handle(msg: types.Message):
+    """
+    Catches any other message to reset the last_message_sender.
+    This ensures that after any interaction in the TG group, the next
+    message from Max will correctly display the sender's name.
+    """
     global last_message_sender
     last_message_sender = None
+    logging.debug("Reset last_message_sender due to activity in TG chat.")
 
-def run_fetcher():
-    try:
-        logger.info("Starting fetcher thread")
-        fetch_and_forward_messages()
-    except Exception as e:
-        logger.critical(f"Fatal error in fetcher - {type(e).__name__}: {str(e)}")
-        logger.debug("Full error details:", exc_info=True)
-    except KeyboardInterrupt:
-        logger.info("Fetcher interrupted by user")
-    finally:
-        logger.info("Fetcher stopped")
-
-def run_polling():
-    try:
-        logger.info("Starting polling thread")
-        bot.infinity_polling()
-    except Exception as e:
-        logger.critical(f"Fatal error in polling - {type(e).__name__}: {str(e)}")
-        logger.debug("Full error details:", exc_info=True)
-    except KeyboardInterrupt:
-        logger.info("Polling interrupted by user")
-    finally:
-        logger.info("Polling stopped")
-
-def start():
-    data_handler.save('started', True)
-    data_handler.save('msgId', 0)
-    data_handler.save('msgs', {})
-    api.send_message(vkChatId, f'{botChr} Привет! Я - бот. [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)\n{botChr} Я пересылаю все сообщения из этого чата в [телеграм](https://t.me/%2BCKBai8TvrZM2NDg6)', format=True)
-
+# --- Main Application ---
 if __name__ == '__main__':
-    if not data_handler.load('started'):
-        start()
+    def shutdown():
+        """Gracefully shuts down the bot, saving state."""
+        print("\nShutting down...")
+        logging.info("Shutdown sequence initiated.")
+        bot.stop_polling()
+        data_handler.save('msgs', msgs_map)
+        logging.info("Message ID map saved. Shutdown complete.")
+        print("Shutdown complete.")
+        sys.exit(0)
 
-    fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
-    fetcher_thread.start()
-    polling_thread = threading.Thread(target=run_polling, name="PollingThread")
+    def pooling():
+        logging.info("Starting Telegram polling...")
+        while True:
+            try:
+                # We add a timeout to the polling call itself as a first line of defense
+                bot.infinity_polling(timeout=60, long_polling_timeout=30)
+            except requests.exceptions.RequestException as e:
+                # This is a broad catch for all network-related errors from the requests library
+                logging.error("Telegram polling failed with a network error: %s", e)
+                logging.info("Restarting polling in 15 seconds...")
+                time.sleep(15)
+            except Exception as e:
+                # Catch any other unexpected errors to prevent the thread from crashing
+                logging.critical("An unexpected error occurred in the polling thread: %s", e, exc_info=True)
+                bot.stop_polling()
+                logging.info("Restarting polling in 30 seconds...")
+                time.sleep(30)
+
+    try:
+        # Initialize the Max API and subscribe to chat events
+        api = MaxBridge.MaxAPI(auth_token=MAX_AUTH_TOKEN, on_event=on_max_event)
+        api.subscribe_to_chat(MAX_CHAT_ID)
+    except Exception as e:
+        logging.critical("Failed to initialize and connect to Max API: %s", e, exc_info=True)
+        sys.exit(1)
+
+    # Start the Telegram polling in a separate, daemonized thread
+    polling_thread = threading.Thread(target=pooling, name="TelebotPolling", daemon=True)
     polling_thread.start()
 
-    logger.info("Bot started successfully")
-    print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
-
-    def shutdown():
-        bot.stop_polling()
-        data_handler.save('msgs', msgs)
-        os._exit(0)
+    logging.info("Bot started successfully. Transfer is active.")
+    print(f'{Fore.YELLOW}Enter "exit" or press Ctrl+C to shutdown.{Style.RESET_ALL}')
 
     try:
+        # Keep the main thread alive to listen for a shutdown command
         while True:
-            if str(input()) == "exit":
-                logger.info("Shutdown command received")
-                shutdown()
-
+            if input().strip().lower() == "exit":
+                logging.info("'exit' command received. Shutting down.")
+                break
     except KeyboardInterrupt:
-        logger.info("Shutdown by keyboard interrupt")
+        logging.info("KeyboardInterrupt received. Shutting down.")
+    finally:
         shutdown()
