@@ -43,6 +43,7 @@ try:
     TG_CHAT_ID = os.getenv('TG_CHAT_ID')
     TG_TOKEN = os.getenv('TG_TOKEN')
     MAX_AUTH_TOKEN = os.getenv('VK_COOKIE')
+    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID'))
     if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN]):
         raise ValueError("One or more environment variables are not set.")
 except (ValueError, TypeError) as e:
@@ -114,14 +115,14 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
 
         # Determine if this message is a reply and find the TG message ID to reply to
         reply_to_message_id = None
-        if 'replyTo' in message and message['replyTo'].get('messageId'):
-            replied_max_id = message['replyTo']['messageId']
+        if message.get('link', {}).get('type') == 'REPLY':
+            replied_max_id = message.get('link', {}).get('message', {}).get('id')
             reply_to_message_id = msgs_map.get(replied_max_id)
             if reply_to_message_id:
                  logging.info("Found corresponding TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
 
         # --- ATTACHMENT PROCESSING LOGIC ---
-        tg_message_to_map = None # The TG message whose ID we'll save for future replies
+        tg_message_to_map = None
         caption_sent = False     # Flag to ensure message text is sent only once (as a caption)
 
         if attachments:
@@ -134,20 +135,29 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
                 
                 match attach_type:
                     case "PHOTO":
-                        url = attach.get('baseUrl')
-                        file_content = requests.get(url).content
-                        media_group_items.append(types.InputMediaPhoto(file_content))
+                        try:
+                            url = attach.get('baseUrl')
+                            file_content = requests.get(url).content
+                            media_group_items.append(types.InputMediaPhoto(file_content))
+                        except Exception as e:
+                            logging.error("Failed to process photo attachment for msg %s: %s", max_message_id, e, exc_info=True)
 
                     case "VIDEO":
                         try:
-                            video = api.get_video(attach.get('id'))
+                            video = api.get_video(attach.get('videoId'))
                             
                             media_group_items.append(types.InputMediaVideo(video))
-                            
                         except Exception as e:
                             logging.error("Failed to process video attachment for msg %s: %s", max_message_id, e, exc_info=True)
+                    case "FILE":
+                        try:
+                            file, name = api.get_file(attach.get('fileId'), MAX_CHAT_ID, max_message_id)
+
+                            bot.send_document(TG_CHAT_ID, file, reply_to_message_id, visible_file_name=name)
+                        except Exception as e:
+                            logging.error("Failed to process file attachment for msg %s: %s", max_message_id, e, exc_info=True)
                 
-                # TODO: Add handlers for other types like "FILE", "STICKER", etc. if needed.
+                # TODO: Add handler for "STICKER"
 
             # 2. Send grouped media (photos/videos)
             if media_group_items:
@@ -158,8 +168,7 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
 
                 sent_messages = bot.send_media_group(
                     TG_CHAT_ID, media_group_items,
-                    reply_to_message_id=reply_to_message_id,
-                    disable_notification=True
+                    reply_to_message_id=reply_to_message_id
                 )
                 # Map the ID of the first message in the album for replies
                 tg_message_to_map = sent_messages[0]
@@ -233,7 +242,7 @@ def send_handler(msg: types.Message):
     try:
         # Enforce the time window for sending messages
         now = datetime.now().time()
-        if not (START_TIME <= now <= END_TIME):
+        if msg.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
             bot.reply_to(msg, f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
             logging.warning(
                 "Message from '%s' blocked due to time restrictions. Current time: %s",
@@ -267,17 +276,22 @@ def send_handler(msg: types.Message):
                     reply_to_max_id = max_id
                     break
         
-        api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id)
+        max_msg = api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id, wait_for_response=True)
+        id = max_msg['payload'].get('message', {}).get('id')
+        if id:
+            msgs_map[id] = msg.message_id
+            logging.info("Successfully mapped Max message %s to TG message %s.", id, msg.message_id)
         
-        bot.reply_to(msg, 'Отправлено!')
-        logging.info("Sent message from '%s' to Max. Replied to Max ID: %s", username, reply_to_max_id)
+            bot.reply_to(msg, 'Отправлено!')
+            logging.info("Sent message from '%s' to Max. Replied to Max ID: %s", username, reply_to_max_id)
         
-        # Reset last sender so the next Max message will show the sender's name
-        last_message_sender = None
+            # Reset last sender so the next Max message will show the sender's name
+            last_message_sender = None
 
     except Exception as e:
         logging.error("Error in send_handler: %s", e, exc_info=True)
         bot.reply_to(msg, 'Произошла ошибка при отправке.')
+        last_message_sender = None
 
 @bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'video', 'document', 'sticker'])
 def messages_handle(msg: types.Message):
@@ -310,12 +324,12 @@ if __name__ == '__main__':
                 bot.infinity_polling(timeout=60, long_polling_timeout=30)
             except requests.exceptions.RequestException as e:
                 # This is a broad catch for all network-related errors from the requests library
-                logging.error("Telegram polling failed with a network error: %s", e)
+                logging.warning("Telegram polling failed with a network error: %s", e)
                 logging.info("Restarting polling in 15 seconds...")
                 time.sleep(15)
             except Exception as e:
                 # Catch any other unexpected errors to prevent the thread from crashing
-                logging.critical("An unexpected error occurred in the polling thread: %s", e, exc_info=True)
+                logging.warning("An unexpected error occurred in the polling thread: %s", e, exc_info=True)
                 bot.stop_polling()
                 logging.info("Restarting polling in 30 seconds...")
                 time.sleep(30)

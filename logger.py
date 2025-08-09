@@ -62,6 +62,7 @@ def setup_logger():
     )
     file_handler.setFormatter(file_formatter)
     file_handler.setLevel(logging.DEBUG)
+    file_handler.addFilter(lambda record: record.name != 'api_logger')
     logger.addHandler(file_handler)
 
     # Console handler
