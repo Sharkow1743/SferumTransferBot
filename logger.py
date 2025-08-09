@@ -37,13 +37,11 @@ def setup_logger():
     log_file = 'bot.log'
     api_log_file = 'api_responses.log'
 
-    # Clear log files if they exist
-    for f in [log_file, api_log_file]:
-        try:
-            with open(f, 'w'):
-                pass
-        except IOError as e:
-            print(f"Warning: Could not clear log file {f} - {e}")
+    try:
+        with open(log_file, 'w'):
+            pass
+    except IOError as e:
+        print(f"Warning: Could not clear log file - {e}")
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)

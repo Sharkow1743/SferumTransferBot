@@ -79,6 +79,7 @@ def get_sender_profile(sender_id: int) -> dict:
     try:
         logging.info("Fetching profile for new user ID: %s", sender_id)
         response = api.get_contact_details([sender_id])
+        response = response['payload']
         api_logger.info(json.dumps(response, indent=4))
         
         if response and 'contacts' in response and response['contacts']:
@@ -139,44 +140,9 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
 
                     case "VIDEO":
                         try:
-                            # Some APIs require an extra call to get the direct video URL
-                            video_info = api.send_command(83, {"videoId": attach.get('videoId'), "chatId": MAX_CHAT_ID, "messageId": max_message_id})
-                            url = video_info.get('MP4_1080') or video_info.get('MP4_720')
-                            if not url:
-                                logging.warning("No downloadable URL found for video in msg %s", max_message_id)
-                                continue
-
-                            logging.info("Downloading video for msg %s from: %s", max_message_id, url)
-
-                            headers = {
-                                'Host': 'vd526.okcdn.ru',
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
-                                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
-                                'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-                                'Connection': 'keep-alive',
-                                'Sec-Fetch-Dest': 'video',
-                                'Sec-Fetch-Mode': 'no-cors',
-                                'Sec-Fetch-Site': 'cross-site',
-                            }
+                            video = api.get_video(attach.get('id'))
                             
-                            cookies = { 'tstc': 'p' }
-
-                            with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=30) as r:
-                                r.raise_for_status()
-
-                                content_type = r.headers.get('content-type')
-                                if 'video' not in content_type:
-                                    logger.error(f"Server returned wrong content-type '{content_type}' for video, not downloading. Body: {r.text}")
-                                    continue
-                                
-                                video_buffer = io.BytesIO()
-                                
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    video_buffer.write(chunk)
-                                
-                                video_buffer.seek(0)
-                            
-                            media_group_items.append(types.InputMediaVideo(video_buffer))
+                            media_group_items.append(types.InputMediaVideo(video))
                             
                         except Exception as e:
                             logging.error("Failed to process video attachment for msg %s: %s", max_message_id, e, exc_info=True)
@@ -288,7 +254,7 @@ def send_handler(msg: types.Message):
         username = f"{first_name} {last_name}".strip()
         
         # Format the message to clearly indicate it came from the Telegram bridge
-        sys_part = f"/{BOT_MESSAGE_SIGNATURE}/"
+        sys_part = f"{BOT_MESSAGE_PREFIX} {BOT_MESSAGE_SIGNATURE}"
         full_text = f"{BOT_MESSAGE_PREFIX} {username} написал(-а):\n{text_to_send}\n{sys_part}"
         
         # Find the Max message ID to reply to, if any
@@ -301,7 +267,7 @@ def send_handler(msg: types.Message):
                     reply_to_max_id = max_id
                     break
         
-        api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_to_id=reply_to_max_id)
+        api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id)
         
         bot.reply_to(msg, 'Отправлено!')
         logging.info("Sent message from '%s' to Max. Replied to Max ID: %s", username, reply_to_max_id)
