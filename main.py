@@ -3,7 +3,6 @@ import os
 import sys
 import threading
 import logging
-import io
 from datetime import datetime, time as t
 import json
 import time
