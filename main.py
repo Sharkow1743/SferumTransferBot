@@ -341,7 +341,7 @@ if __name__ == '__main__':
         logging.critical("Failed to initialize and connect to Max API: %s", e, exc_info=True)
         sys.exit(1)
 
-    BOT_START_MESSAGE.replace("TG_CHAT_INVITE_LINK", bot.export_chat_invite_link(TG_CHAT_ID))
+    BOT_START_MESSAGE = BOT_START_MESSAGE.replace("TG_CHAT_INVITE_LINK", bot.export_chat_invite_link(TG_CHAT_ID))
     if BOT_START_MESSAGE != "" and not data_handler.load("started"):
         data_handler.save("started", True)
         api.send_message(MAX_CHAT_ID, BOT_START_MESSAGE, format=True)
