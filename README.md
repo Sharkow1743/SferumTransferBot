@@ -1,6 +1,6 @@
-# Sferum Transfer Bot
+# Max Transfer Bot
 
-Это бот, который пересылает сообщения из Сферума в Telegram.
+Это бот, который пересылает сообщения из Max в Telegram.
 
 ## Что он умеет
 
