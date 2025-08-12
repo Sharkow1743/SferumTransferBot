@@ -32,9 +32,9 @@ load_dotenv()
 START_TIME = t(7, 0)
 END_TIME = t(22, 0)
 
-# Bot signature details to identify messages sent by this bridge
-BOT_MESSAGE_SIGNATURE = "Я - бот."
-BOT_MESSAGE_PREFIX = "⫻" # A unique character to prefix bot messages
+BOT_MESSAGE_SIGNATURE = "Я - бот"
+BOT_MESSAGE_PREFIX = "⫻"
+BOT_START_MESSAGE = f"{BOT_MESSAGE_PREFIX} Привет! {BOT_MESSAGE_SIGNATURE}. Я пересылаю все сообщения отсюда в [телеграм](https://t.me/+CKBai8TvrZM2NDg6).\n{BOT_MESSAGE_PREFIX} [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)"
 
 # --- Environment Variables ---
 try:
@@ -340,6 +340,10 @@ if __name__ == '__main__':
     except Exception as e:
         logging.critical("Failed to initialize and connect to Max API: %s", e, exc_info=True)
         sys.exit(1)
+
+    if not data_handler.load("started"):
+        data_handler.save("started", True)
+        api.send_message(MAX_CHAT_ID, BOT_START_MESSAGE, format=True)
 
     # Start the Telegram polling in a separate, daemonized thread
     polling_thread = threading.Thread(target=pooling, name="TelebotPolling", daemon=True)
