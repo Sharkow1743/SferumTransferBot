@@ -263,7 +263,7 @@ def send_handler(msg: types.Message):
         
         # Format the message to clearly indicate it came from the Telegram bridge
         sys_part = f"{BOT_MESSAGE_PREFIX} {BOT_MESSAGE_SIGNATURE}"
-        full_text = f"{BOT_MESSAGE_PREFIX} {username} написал(-а):\n{text_to_send}\n{sys_part}"
+        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}\n{sys_part}"
         
         # Find the Max message ID to reply to, if any
         reply_to_max_id = None
@@ -275,7 +275,7 @@ def send_handler(msg: types.Message):
                     reply_to_max_id = max_id
                     break
         
-        max_msg = api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id, wait_for_response=True)
+        max_msg = api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id, wait_for_response=True, format=True)
         id = max_msg['payload'].get('message', {}).get('id')
         if id:
             msgs_map[id] = msg.message_id
