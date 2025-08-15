@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, time as t
 import json
 import time
+import signal
 
 # Third-party Imports
 import telebot
@@ -351,15 +352,24 @@ if __name__ == '__main__':
     polling_thread.start()
 
     logging.info("Bot started successfully. Transfer is active.")
-    print(f'{Fore.YELLOW}Enter "exit" or press Ctrl+C to shutdown.{Style.RESET_ALL}')
 
-    try:
-        # Keep the main thread alive to listen for a shutdown command
+    if os.getenv("IS_DOCKER"):
+        signal.signal(signal.SIGTERM, shutdown)
         while True:
-            if input().strip().lower() == "exit":
-                logging.info("'exit' command received. Shutting down.")
-                break
-    except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt received. Shutting down.")
-    finally:
-        shutdown()
+            time.sleep(1)
+    else:
+        signal.signal(signal.SIGINT, shutdown)
+        print(f'{Fore.YELLOW}Enter "exit" or press Ctrl+C to shutdown.{Style.RESET_ALL}')
+        try:
+            while True:
+                cmd = input().strip().lower()
+                match cmd:
+                    case "exit":
+                        shutdown()
+                    case "send_tg":
+                        bot.send_message(TG_CHAT_ID, "Админ:")
+                        bot.send_message(TG_CHAT_ID, input("message: "))
+                    case "send_max":
+                        api.send_message(MAX_CHAT_ID, f"{BOT_MESSAGE_PREFIX} {input("message: ")}")
+        except Exception as e:
+            logging.error("Error: %s", e)
