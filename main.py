@@ -13,6 +13,7 @@ import logging
 import json
 import data_handler
 import SferumBridge
+import signal
 
 colorama.init()
 colorama.just_fix_windows_console()
@@ -273,22 +274,26 @@ if __name__ == '__main__':
         data_handler.save('msgs', msgs)
         os._exit(0)
 
-    try:
+    if os.getenv("IS_DOCKER"):
+        signal.signal(signal.SIGTERM, shutdown)
         while True:
-            match str(input()).lower():
-                case "exit":
-                    shutdown()
-                case "stop":
-                    shutdown()
-                case "sendtg":
-                    msg = str(input())
-                    bot.send_message(chatId, "Бот написал:")
-                    bot.send_message(chatId, msg)
-                case "sendvk":
-                    msg = str(input())
-                    msg = f"{botChr} Бот написал:\n{msg}"
-                    api.send_message(vkChatId, msg)
-
-    except KeyboardInterrupt:
-        logger.debug("Shutdown by keyboard interrupt")
-        shutdown()
+            time.sleep(1)
+    else:
+        try:
+            while True:
+                match str(input()).lower():
+                    case "exit":
+                        shutdown()
+                    case "stop":
+                        shutdown()
+                    case "sendtg":
+                        msg = str(input())
+                        bot.send_message(chatId, "Бот написал:")
+                        bot.send_message(chatId, msg)
+                    case "sendvk":
+                        msg = str(input())
+                        msg = f"{botChr} Бот написал:\n{msg}"
+                        api.send_message(vkChatId, msg)
+        except KeyboardInterrupt:
+            logger.debug("Shutdown by keyboard interrupt")
+            shutdown()
