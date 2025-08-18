@@ -208,4 +208,7 @@ __marimo__/
 
 # Data
 data.json
+
 *.code-workspace
+
+*.env
