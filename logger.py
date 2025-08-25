@@ -6,12 +6,11 @@ def setup_logger():
     api_log_file = 'api_responses.log'  # New file for API responses
     
     # Clear log files if they exist
-    for file_path in [log_file, api_log_file]:
-        try:
-            with open(file_path, 'w'):
-                pass  # This clears the file contents
-        except IOError as e:
-            print(f"Warning: Could not clear log file {file_path} - {e}")
+    try:
+        with open(log_file, 'w'):
+            pass  # This clears the file contents
+    except IOError as e:
+        print(f"Warning: Could not clear log file {log_file} - {e}")
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)  # Set to lowest level for handlers to filter

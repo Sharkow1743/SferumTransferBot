@@ -21,7 +21,6 @@ colorama.just_fix_windows_console()
 # Настройка
 startTime = t(7,0) # Время после которого можно отправлять сообщения в сферум
 endTime = t(21,0) # Время после которого нельзя отправлять сообщения в сферум
-botMsg = "Я - бот." # Что бот добавляет к сообщению когда отправляет в сферум
 botChr = "⫻" # Что бот добавляет к сообщениям чтобы определить сообщение от бота, которые не надо пересылать
 helloMsg = '' # Что бот отправит при первом запуске
 
@@ -77,10 +76,13 @@ def fetch_and_forward_messages():
                 data_handler.save('msgId', last_message_id)
                 senderProfile = None
                 for profile in response['profiles']:
-                    if message['from_id'] == profile['id']:
+                    id = profile['id']
+                    profiles[id] = profile
+                    if message['from_id'] == id:
                         senderProfile = profile
                 forward_message_to_group(message, last_message_sender, senderProfile)
                 last_message_sender = message['from_id']
+                data_handler.save('profiles', profiles)
                 logger.info(f"Forwarded message {message['conversation_message_id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
                     
         time.sleep(5)
@@ -95,14 +97,36 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
         sender_id = message['from_id']
         text_content = message.get('text', '')
         attachments = message.get('attachments', [])
+        action = message.get('action', {})
+        action_type = action.get('type', None)
         
         # Формируем имя отправителя
         sender_name = f"{sender_first_name} {sender_last_name}"
         gender_suffix = "ла" if sender_sex == 1 else "л"
         
         # Проверяем, нужно ли показывать имя отправителя
-        if last_message_sender == None or last_message_sender != sender_id:
-            bot.send_message(chatId, f"{sender_name} написа{gender_suffix}:")
+        if (last_message_sender == None or last_message_sender != sender_id) and (text_content != '' or len(attachment) > 0):
+            bot.send_message(chatId, f"{botChr} *{sender_name} написа{gender_suffix}:*", parse_mode='MarkdownV2', disable_notification=True)
+
+        if action and action_type:
+            text = ''
+            match action_type:
+                case 'chat_invite_user':
+                    id = action.get('member_id')
+                    name = profiles[id]['first_name_acc']
+                    if sender_id != id:
+                        text = f'{sender_name} пригласи{gender_suffix} {name}'
+                    else:
+                        text
+                case 'chat_invite_user_by_link':
+                    text = f'{sender_name} заш{gender_suffix if sender_sex == 1 else 'ё' + gender_suffix} по ссылке-приглашению'
+                case 'chat_kick_user':
+                    id = action.get('member_id')
+                    name = profiles[id]['first_name_acc']
+                    text = f'{sender_name} исключи{gender_suffix} {name}'
+
+            bot.send_message(chatId, text)
+
         
         # Обрабатываем вложения
         media_items = []
@@ -173,6 +197,7 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
         if telegram_message and hasattr(telegram_message, 'id'):
             if conversation_message_id not in msgs:
                 msgs[int(conversation_message_id)] = telegram_message.id
+                data_handler.save('msgs', msgs)
     except Exception as e:
         error_message = (f"Error forwarding message {message.get('conversation_message_id', 'unknown')} - "
                          f"{type(e).__name__}: {str(e)}")
@@ -187,13 +212,13 @@ def send_handler(msg):
         if str(msg.from_user.id) == admin_user_id or (now > startTime and now < endTime):
             logger.info(f"Received message to send from {msg.from_user.username} (ID: {msg.id})")
 
-            firstName = msg.from_user.first_name
-            lastName = msg.from_user.last_name if msg.from_user.last_name != None else ""
-            username = f"{firstName} {lastName}"
-            
-            sysPart = f"{botChr} /{botMsg}/"
+            firstName = users.get(msg.from_user.id, None)
+            if not firstName:
+                bot.reply_to(msg, 'Укажите своё имя с помощью комманды "/set_name <имя>"')
+                return
+            username = f"{firstName}"
 
-            text = f"{botChr} *{username} написал(-а):*\n{msg.text[5:]}\n{sysPart}"
+            text = f"{botChr} *{username} написал(-а):*\n{msg.text[5:]}"
 
             replyId = None
             if msg.reply_to_message:
@@ -206,6 +231,7 @@ def send_handler(msg):
                     bot.reply_to(msg, 'Отправлено!')
                     msgs[int(response['cmid'])] = msg.id
                     last_message_sender = None
+                    data_handler.save('msgs', msgs)
                 elif 'error_code' in response:
                     raise RuntimeError(response['error_msg'])
                 
@@ -218,6 +244,12 @@ def send_handler(msg):
     except Exception as e:
         logger.error(f"Error in send_handler - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
+
+@bot.message_handler(['set_name'])
+def set_name(msg):
+    name = msg.text[10:]
+    users[msg.from_user.id] = name
+    data_handler.save('users', users)
 
 @bot.message_handler(func=lambda m: True)
 def messages_handle(msg):
@@ -260,6 +292,8 @@ if __name__ == '__main__':
         start()
 
     msgs = data_handler.load('msgs') or {} #VK id:TG id
+    users = data_handler.load('users') or {} #TG id:name
+    profiles = data_handler.load('profiles') or {} #VK id:name
 
     fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
     fetcher_thread.start()
@@ -269,10 +303,12 @@ if __name__ == '__main__':
     logger.info("Bot started successfully")
     print(f'{Fore.YELLOW}Enter "exit" or ^c to shutdown.{Style.RESET_ALL}')
 
-    def shutdown():
+    def shutdown(a = None, b = None):
         logger.info("Shutdown...")
         bot.stop_polling()
         data_handler.save('msgs', msgs)
+        data_handler.save('users', users)
+        data_handler.save('profiles', profiles)
         os._exit(0)
 
     if os.getenv("IS_DOCKER"):

@@ -5,11 +5,11 @@ logger = logging.getLogger()
 
 cache = {}
 
-def load(key):
+def load(key, file = "data.json"):
     if key in cache:
         return cache[key]
     try:
-        with open("data.json", "r") as f:
+        with open(f"data/{file}", "r") as f:
             data = json.load(f).get(str(key), None)
             cache[key] = data
             return data
@@ -24,18 +24,18 @@ def load(key):
         logger.debug("Full error details:", exc_info=True)
         return None
 
-def save(key, value):
+def save(key, value, file = "data.json"):
     try:
         data = {}
         try:
-            with open("data.json", "r") as f:
+            with open(f"data/{file}", "r") as f:
                 data = json.load(f)
         except FileNotFoundError:
             pass
 
         data[str(key)] = value
 
-        with open("data.json", "w") as f:
+        with open(f"data/{file}", "w") as f:
             json.dump(data, f)
         cache[key] = value
         logger.debug(f"Saved key '{key}' with value: {value}")
