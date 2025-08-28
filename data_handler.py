@@ -38,7 +38,6 @@ def save(key, value, file = "data.json"):
         with open(f"data/{file}", "w") as f:
             json.dump(data, f)
         cache[key] = value
-        logger.debug(f"Saved key '{key}' with value: {value}")
     except Exception as e:
         logger.error(f"Error saving key '{key}' - {type(e).__name__}: {str(e)}")
         logger.debug("Full error details:", exc_info=True)
