@@ -42,7 +42,6 @@ api_logger = logging.getLogger("api_logger")
 
 # Then modify your fetch_and_forward_messages function to log API responses:
 def fetch_and_forward_messages():
-    last_message_id = data_handler.load('msgId')
     logger.info("Starting message fetcher")
     global api
     global last_message_sender
@@ -70,10 +69,10 @@ def fetch_and_forward_messages():
             continue
         
         for message in messages:
-            if last_message_id is None or message['conversation_message_id'] > last_message_id and not message['text'].startswith(botChr):
+            id = str(message['conversation_message_id'])
+            if not id in msgs and not message['text'].startswith(botChr):
                 bot.send_chat_action(chatId, "typing")
-                last_message_id = message['conversation_message_id']
-                data_handler.save('msgId', last_message_id)
+                msgs[id] = None
                 senderProfile = None
                 for profile in response['profiles']:
                     id = profile['id']
@@ -83,7 +82,7 @@ def fetch_and_forward_messages():
                 forward_message_to_group(message, last_message_sender, senderProfile)
                 last_message_sender = message['from_id']
                 data_handler.save('profiles', profiles)
-                logger.info(f"Forwarded message {message['conversation_message_id']} from {senderProfile['first_name']} {senderProfile['last_name']}")
+                logger.info(f"Forwarded message {id} from {senderProfile['first_name']} {senderProfile['last_name']}")
                     
         time.sleep(5)
 
@@ -165,7 +164,7 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
         # Обрабатываем ответ на сообщение
         reply_to_message_id = None
         if 'reply_message' in message:
-            reply_conversation_id = int(message['reply_message']['conversation_message_id'])
+            reply_conversation_id = str(message['reply_message']['conversation_message_id'])
             if reply_conversation_id in msgs:
                 reply_to_message_id = msgs[reply_conversation_id]
         
@@ -194,9 +193,10 @@ def forward_message_to_group(message, last_message_sender, sender_profile):
             logger.info(f"Sent text message: {log_text.replace('\n', '\\n')}")
         
         # Сохраняем соответствие ID сообщений
+        msgs.pop(conversation_message_id)
         if telegram_message and hasattr(telegram_message, 'id'):
             if conversation_message_id not in msgs:
-                msgs[int(conversation_message_id)] = telegram_message.id
+                msgs[conversation_message_id] = telegram_message.id
                 data_handler.save('msgs', msgs)
     except Exception as e:
         error_message = (f"Error forwarding message {message.get('conversation_message_id', 'unknown')} - "
@@ -229,7 +229,7 @@ def send_handler(msg):
                 if 'cmid' in response:
                     logger.info(f"Message {msg.id} sent to Sferum")
                     bot.reply_to(msg, 'Отправлено!')
-                    msgs[int(response['cmid'])] = msg.id
+                    msgs[str(response['cmid'])] = msg.id
                     last_message_sender = None
                     data_handler.save('msgs', msgs)
                 elif 'error_code' in response:
@@ -282,7 +282,6 @@ def run_polling():
 
 def start():
     data_handler.save('started', True)
-    data_handler.save('msgId', 0)
     data_handler.save('msgs', {})
     if helloMsg:
         api.send_message(vkChatId, helloMsg, format=True)
