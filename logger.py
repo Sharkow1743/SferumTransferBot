@@ -2,8 +2,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 def setup_logger():
-    log_file = 'bot.log'
-    api_log_file = 'api_responses.log'  # New file for API responses
+    log_file = 'data/bot.log'
+    api_log_file = 'data/api_responses.log'  # New file for API responses
     
     # Clear log files if they exist
     try:
