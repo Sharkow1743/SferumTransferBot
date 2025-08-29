@@ -113,20 +113,23 @@ def fetch_and_forward_messages():
             if not msgId in msgs and not message['text'].startswith(botChr):
                 send_with_rate_limit(bot.send_chat_action, chatId, "typing")
                 senderProfile = None
-                for profile in response['profiles']:
-                    userId = profile['id']
-                    if not str(userId) in profiles:
-                        profiles[userId] = profile
-                    if message['from_id'] == userId:
-                        senderProfile = profile
-                forward_message_to_group(message, last_message_sender, senderProfile)
-                last_message_sender = message['from_id']
+                if message['from_id'] in profiles:
+                    senderProfile = profiles[message['from_id']]
+                else:
+                    for profile in response['profiles']:
+                        userId = profile['id']
+                        if not str(userId) in profiles:
+                            profiles[userId] = profile
+                        if message['from_id'] == userId:
+                            senderProfile = profile
+                forward_message_to_group(message, senderProfile)
                 data_handler.save('profiles', profiles)
                 logger.info(f"Forwarded message {msgId} from {senderProfile['first_name']} {senderProfile['last_name']}")
 
         time.sleep(5)
 
-def forward_message_to_group(message, last_message_sender, sender_profile, is_forwarded = False):
+def forward_message_to_group(message, sender_profile, is_forwarded = False):
+    global last_message_sender
     try:
         # Извлекаем часто используемые значения
         conversation_message_id = str(message['conversation_message_id'])
@@ -138,8 +141,9 @@ def forward_message_to_group(message, last_message_sender, sender_profile, is_fo
         attachments = message.get('attachments', [])
         action = message.get('action', {})
         action_type = action.get('type', None)
+        is_empty = text_content.strip() == '' and len(attachments) > 0
 
-        if is_forwarded:
+        if is_forwarded and not is_empty:
             text_content = 'Переслано:\n' + text_content
 
         # Формируем имя отправителя
@@ -151,16 +155,17 @@ def forward_message_to_group(message, last_message_sender, sender_profile, is_fo
         # Проверяем, нужно ли показывать имя отправителя
         if ((last_message_sender == None or
             last_message_sender != sender_id) and
-
-            (text_content.strip() != '' or
-            len(attachments) > 0)):
+            not is_empty):
             send_with_rate_limit(bot.send_message, chatId,
                              f"{botChr} *{sender_name} написа{gender_suffix}:*",
                              parse_mode='MarkdownV2',
                              disable_notification=True
             )
 
+        last_message_sender = sender_id
+
         if action and action_type:
+            last_message_sender = None
             text = ''
             match action_type:
                 case 'chat_invite_user':
@@ -222,7 +227,7 @@ def forward_message_to_group(message, last_message_sender, sender_profile, is_fo
             if reply_conversation_id in msgs:
                 reply_to_message_id = msgs[reply_conversation_id]
 
-        if 'fwd_messages' in message and len(message['fwd_messages']) > 0:
+        if 'fwd_messages' in message and len(message['fwd_messages']) > 0 and not is_empty:
             for fwd_message in message['fwd_messages']:
                 fwd_message['conversation_message_id'] = conversation_message_id
                 forward_message_to_group(fwd_message, last_message_sender, sender_profile, True)
@@ -232,7 +237,7 @@ def forward_message_to_group(message, last_message_sender, sender_profile, is_fo
             telegram_message = send_with_rate_limit(bot.send_media_group,
                 chatId,
                 media_items,
-                reply_to_message_id=reply_to_message_id)
+                reply_to_message_id=reply_to_message_id)[0]
             logger.info(f"Sent media group with {len(media_items)} items")
         elif text_content and text_content.strip():
             telegram_message = send_with_rate_limit(bot.send_message,
@@ -245,15 +250,24 @@ def forward_message_to_group(message, last_message_sender, sender_profile, is_fo
             logger.info(f"Sent text message: {log_text.replace('\n', '\\n')}")
 
         # Сохраняем соответствие ID сообщений
-        tg_msg_id = telegram_message.id if telegram_message else None
+        tg_msg_id = None
+        if telegram_message:
+            try:
+                tg_msg_id = telegram_message.id
+            except Exception:
+                pass
+
         if not is_forwarded:
             if not conversation_message_id in msgs:
                 msgs[conversation_message_id] = tg_msg_id
         elif msgs.get(conversation_message_id, None):
             msgs[conversation_message_id] = tg_msg_id
         data_handler.save('msgs', msgs)
-        print('saved')
     except Exception as e:
+        id = message.get('conversation_message_id', None)
+        if id and not id in msgs:
+            msgs[id] = None
+            data_handler.save('msgs', msgs)
         error_message = (f"Error forwarding message {message.get('conversation_message_id', 'unknown')} - "
                          f"{type(e).__name__}: {str(e)}")
         logger.error(error_message)
@@ -348,7 +362,7 @@ if __name__ == '__main__':
 
     msgs = data_handler.load('msgs') or {} #VK id:TG id
     users = data_handler.load('users') or {} #TG id:name
-    profiles = data_handler.load('profiles') or {} #VK id:name
+    profiles = data_handler.load('profiles') or {} #VK id:profile
 
     fetcher_thread = threading.Thread(target=run_fetcher, name="FetcherThread")
     fetcher_thread.start()
