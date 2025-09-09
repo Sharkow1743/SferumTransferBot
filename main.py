@@ -152,18 +152,6 @@ def forward_message_to_group(message, sender_profile, is_forwarded = False):
 
         telegram_message = None
 
-        # Проверяем, нужно ли показывать имя отправителя
-        if ((last_message_sender == None or
-            last_message_sender != sender_id) and
-            not is_empty):
-            send_with_rate_limit(bot.send_message, chatId,
-                             f"{botChr} *{sender_name} написа{gender_suffix}:*",
-                             parse_mode='MarkdownV2',
-                             disable_notification=True
-            )
-
-        last_message_sender = sender_id
-
         if action and action_type:
             last_message_sender = None
             text = ''
@@ -183,6 +171,16 @@ def forward_message_to_group(message, sender_profile, is_forwarded = False):
                     text = f'{sender_name} исключи{gender_suffix} {name}'
 
             telegram_message = send_with_rate_limit(bot.send_message, chatId, text, disable_notification=True)
+        else:
+            if ((last_message_sender == None or
+                last_message_sender != sender_id) and
+                not is_empty):
+                send_with_rate_limit(bot.send_message, chatId,
+                                    f"{botChr} *{sender_name} написа{gender_suffix}:*",
+                                    parse_mode='MarkdownV2',
+                                    disable_notification=True
+            )
+            last_message_sender = sender_id
 
 
         # Обрабатываем вложения
@@ -230,7 +228,7 @@ def forward_message_to_group(message, sender_profile, is_forwarded = False):
         if 'fwd_messages' in message and len(message['fwd_messages']) > 0 and not is_empty:
             for fwd_message in message['fwd_messages']:
                 fwd_message['conversation_message_id'] = conversation_message_id
-                forward_message_to_group(fwd_message, last_message_sender, sender_profile, True)
+                forward_message_to_group(fwd_message, sender_profile, True)
 
         # Отправляем сообщение
         if len(media_items) > 0:
