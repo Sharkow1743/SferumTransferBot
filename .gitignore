@@ -207,6 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # Data
-data.json
+data
 
 *.code-workspace
