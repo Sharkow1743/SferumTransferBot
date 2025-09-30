@@ -34,8 +34,8 @@ class ConsoleFormatterWithNoTraceback(logging.Formatter):
         return formatted_message
 
 def setup_logger():
-    log_file = 'bot.log'
-    api_log_file = 'api_responses.log'
+    log_file = 'data/bot.log'
+    api_log_file = 'data/api_responses.log'
 
     try:
         with open(log_file, 'w'):

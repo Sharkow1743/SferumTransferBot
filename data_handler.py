@@ -5,7 +5,7 @@ logger = logging.getLogger()
 
 cache = {}
 
-def load(key, file = "data.json"):
+def load(key, file = "data/data.json"):
     if key in cache:
         return cache[key]
     try:
@@ -23,7 +23,7 @@ def load(key, file = "data.json"):
         logger.debug("Full error details:", exc_info=True)
         return None
 
-def save(key, value, file = "data.json"):
+def save(key, value, file = "data/data.json"):
     try:
         data = {}
         try:

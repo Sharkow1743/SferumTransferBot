@@ -33,9 +33,9 @@ load_dotenv()
 START_TIME = t(7, 0)
 END_TIME = t(22, 0)
 
-BOT_MESSAGE_SIGNATURE = "Я - бот"
+BOT_MESSAGE_SIGNATURE = ""
 BOT_MESSAGE_PREFIX = "⫻"
-BOT_START_MESSAGE = f"{BOT_MESSAGE_PREFIX} Привет! {BOT_MESSAGE_SIGNATURE}. Я пересылаю все сообщения отсюда в [телеграм](TG_CHAT_INVITE_LINK).\n{BOT_MESSAGE_PREFIX} [Мой гитхаб](https://github.com/Sharkow1743/sferumTransferBot)"
+BOT_START_MESSAGE = f""
 
 # --- Environment Variables ---
 try:
@@ -111,7 +111,7 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
 
         # To avoid clutter, only show the sender's name if they are new or different
         if prev_sender is None or prev_sender != sender_id:
-            bot.send_message(TG_CHAT_ID, f"*{sender_name}*:", parse_mode="Markdown")
+            bot.send_message(TG_CHAT_ID, f"{BOT_MESSAGE_PREFIX} *{sender_name}*:", parse_mode="Markdown")
 
         # Determine if this message is a reply and find the TG message ID to reply to
         reply_to_message_id = None
@@ -307,7 +307,6 @@ def messages_handle(msg: types.Message):
 # --- Main Application ---
 if __name__ == '__main__':
     def shutdown():
-        """Gracefully shuts down the bot, saving state."""
         print("\nShutting down...")
         logging.info("Shutdown sequence initiated.")
         bot.stop_polling()
@@ -354,11 +353,11 @@ if __name__ == '__main__':
     logging.info("Bot started successfully. Transfer is active.")
 
     if os.getenv("IS_DOCKER"):
-        signal.signal(signal.SIGTERM, shutdown)
+        signal.signal(signal.SIGTERM, lambda a, b: shutdown())
         while True:
             time.sleep(1)
     else:
-        signal.signal(signal.SIGINT, shutdown)
+        signal.signal(signal.SIGINT, lambda a, b: shutdown())
         print(f'{Fore.YELLOW}Enter "exit" or press Ctrl+C to shutdown.{Style.RESET_ALL}')
         try:
             while True:
