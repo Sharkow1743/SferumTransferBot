@@ -97,7 +97,7 @@ def get_sender_profile(sender_id: int) -> dict:
     # Return a fallback profile if the API call fails or yields no data
     return {'id': sender_id, 'name': f'User {sender_id}'}
 
-def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile: dict):
+def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile: dict, forwarded: bool = False):
     """
     Formats and forwards a message from Max to the Telegram group.
     Handles text, replies, and various attachments (photos, videos, docs, stickers).
@@ -109,24 +109,33 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
         text_content = message.get('text', '')
         attachments = message.get('attaches', [])
 
+        if forwarded and text_content:
+            text_content = f"Переслано:\n{text_content}"
+
         # To avoid clutter, only show the sender's name if they are new or different
-        if prev_sender is None or prev_sender != sender_id:
+        if prev_sender is None or prev_sender != sender_id and not forwarded:
             bot.send_message(TG_CHAT_ID, f"{BOT_MESSAGE_PREFIX} *{sender_name}*:", parse_mode="Markdown")
 
         # Determine if this message is a reply and find the TG message ID to reply to
         reply_to_message_id = None
-        if message.get('link', {}).get('type') == 'REPLY':
-            replied_max_id = message.get('link', {}).get('message', {}).get('id')
-            reply_to_message_id = msgs_map.get(replied_max_id)
-            if reply_to_message_id:
-                 logging.info("Found corresponding TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
+        match message.get('link', {}).get('type'):
+            case 'REPLY':
+                replied_max_id = message.get('link', {}).get('message', {}).get('id')
+                reply_to_message_id = msgs_map.get(replied_max_id)
+                if reply_to_message_id:
+                    logging.debug("Found corresponding TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
+            case 'FORWARD':
+                forward_msg = message.get('link', {}).get('message')
+                if forward_msg:
+                    forward_max_message_to_group(forward_msg, sender_id, sender_profile, True)
+
 
         # --- ATTACHMENT PROCESSING LOGIC ---
         tg_message_to_map = None
         caption_sent = False     # Flag to ensure message text is sent only once (as a caption)
 
         if attachments:
-            logging.info("Processing message %s with %d attachments.", max_message_id, len(attachments))
+            logging.debug("Processing message %s with %d attachments.", max_message_id, len(attachments))
             media_group_items = []
             
             # 1. Categorize attachments to handle them correctly
@@ -153,7 +162,7 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
                         try:
                             file, name = api.get_file(attach.get('fileId'), MAX_CHAT_ID, max_message_id)
 
-                            bot.send_document(TG_CHAT_ID, file, reply_to_message_id, visible_file_name=name)
+                            bot.send_document(TG_CHAT_ID, file, reply_to_message_id, visible_file_name=name, caption="Переслано" if forwarded else None)
                         except Exception as e:
                             logging.error("Failed to process file attachment for msg %s: %s", max_message_id, e, exc_info=True)
                 
@@ -185,7 +194,7 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
         # 4. Save the mapping from Max message ID to the new Telegram message ID
         if tg_message_to_map:
             msgs_map[max_message_id] = tg_message_to_map.message_id
-            logging.info("Successfully mapped Max message %s to TG message %s.", max_message_id, tg_message_to_map.message_id)
+            logging.debug("Successfully mapped Max message %s to TG message %s.", max_message_id, tg_message_to_map.message_id)
 
     except Exception as e:
         logging.error("Error in forward_max_message_to_group for Max msg %s: %s", message.get('id', 'unknown'), e, exc_info=True)
