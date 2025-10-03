@@ -69,9 +69,6 @@ def setup_logger():
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(logging.INFO)
-    # *** KEY CHANGE HERE ***
-    # Add a filter to prevent 'api_logger' messages from reaching the console.
-    # This filter allows a record to pass only if its name is NOT 'api_logger'.
     console_handler.addFilter(lambda record: record.name != 'api_logger')
     logger.addHandler(console_handler)
 
