@@ -21,10 +21,9 @@ import MaxBridge
 import data_handler
 import logger
 
+# --- Initial Setup ---
 logger.setup_logger()
 api_logger = logging.getLogger("api_logger")
-
-# --- Initial Setup ---
 colorama.init(autoreset=True)
 load_dotenv()
 
@@ -33,38 +32,38 @@ load_dotenv()
 START_TIME = t(7, 0)
 END_TIME = t(22, 0)
 
+# Health Check and Restart Configuration
+HEALTH_CHECK_INTERVAL = 300  # Check API health every 5 minutes (300 seconds)
+MAX_API_FAILURE_THRESHOLD = 3  # Restart bot after 3 consecutive failed health checks
+REQUESTS_TIMEOUT = 15 # Timeout in seconds for downloading attachments
+
 BOT_MESSAGE_SIGNATURE = ""
 BOT_MESSAGE_PREFIX = "⫻"
 BOT_START_MESSAGE = f""
 
-# --- Environment Variables ---
+# --- Environment Variables & Validation ---
 try:
     MAX_CHAT_ID = int(os.getenv('VK_CHAT_ID'))
     TG_CHAT_ID = os.getenv('TG_CHAT_ID')
     TG_TOKEN = os.getenv('TG_TOKEN')
     MAX_AUTH_TOKEN = os.getenv('VK_COOKIE')
     ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID'))
-    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN]):
+    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN, ADMIN_USER_ID]):
         raise ValueError("One or more environment variables are not set.")
 except (ValueError, TypeError) as e:
-    print(f"{Fore.RED}FATAL: Configuration error - {e}. Please check your .env file.{Style.RESET_ALL}")
+    logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
     sys.exit(1)
 
-
 # --- State and Globals ---
-# Maps Max message ID (str) to the corresponding Telegram message ID (int) for replies.
-# Loaded from and saved to a file by data_handler.
 msgs_map = data_handler.load('msgs') or {}
-
-# In-memory cache for user profiles to reduce API calls. {max_user_id: profile_dict}
 user_cache = {}
-
-# Stores the ID of the last user who sent a message to avoid repeating names.
 last_message_sender = None
+max_api_failures = 0 # Counter for consecutive API health check failures
+shutdown_event = threading.Event() # Used to signal threads to stop gracefully
 
 # --- API Initialization ---
-bot = telebot.TeleBot(TG_TOKEN, threaded=False) # threaded=False is often safer with manual threading
-api = None # Will be initialized in the main block
+bot = telebot.TeleBot(TG_TOKEN, threaded=False)
+api = None
 
 # --- Core Logic: Max -> Telegram ---
 
@@ -76,31 +75,24 @@ def get_sender_profile(sender_id: int) -> dict:
     global user_cache
     if sender_id in user_cache:
         return user_cache[sender_id]
-
     try:
         logging.info("Fetching profile for new user ID: %s", sender_id)
+        # Assuming get_contact_details is a lightweight call suitable for this
         response = api.get_contact_details([sender_id])
         response = response['payload']
         api_logger.info(json.dumps(response, indent=4))
-        
         if response and 'contacts' in response and response['contacts']:
             profile = response['contacts'][0]
-            # Cache a simplified version of the profile
-            user_cache[sender_id] = {
-                'id': profile['id'],
-                'name': profile['names'][0]['name'],
-            }
+            user_cache[sender_id] = {'id': profile['id'], 'name': profile['names'][0]['name']}
             return user_cache[sender_id]
     except Exception as e:
         logging.error("Could not fetch profile for ID %s: %s", sender_id, e, exc_info=True)
-
-    # Return a fallback profile if the API call fails or yields no data
     return {'id': sender_id, 'name': f'User {sender_id}'}
 
 def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile: dict, forwarded: bool = False):
     """
     Formats and forwards a message from Max to the Telegram group.
-    Handles text, replies, and various attachments (photos, videos, docs, stickers).
+    Handles text, replies, and various attachments with improved error handling.
     """
     try:
         max_message_id = message.get('id')
@@ -112,191 +104,107 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
         if forwarded and text_content:
             text_content = f"Переслано:\n{text_content}"
 
-        # To avoid clutter, only show the sender's name if they are new or different
         if prev_sender is None or prev_sender != sender_id and not forwarded:
             bot.send_message(TG_CHAT_ID, f"{BOT_MESSAGE_PREFIX} *{sender_name}*:", parse_mode="Markdown")
 
-        # Determine if this message is a reply and find the TG message ID to reply to
         reply_to_message_id = None
-        match message.get('link', {}).get('type'):
-            case 'REPLY':
-                replied_max_id = message.get('link', {}).get('message', {}).get('id')
-                reply_to_message_id = msgs_map.get(replied_max_id)
-                if reply_to_message_id:
-                    logging.debug("Found corresponding TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
-            case 'FORWARD':
-                forward_msg = message.get('link', {}).get('message')
-                if forward_msg:
-                    forward_max_message_to_group(forward_msg, sender_id, sender_profile, True)
+        link_type = message.get('link', {}).get('type')
+        if link_type == 'REPLY':
+            replied_max_id = message.get('link', {}).get('message', {}).get('id')
+            reply_to_message_id = msgs_map.get(replied_max_id)
+            if reply_to_message_id:
+                logging.debug("Found TG message %s to reply to for Max message %s", reply_to_message_id, max_message_id)
+        elif link_type == 'FORWARD':
+            forward_msg = message.get('link', {}).get('message')
+            if forward_msg:
+                # Recursively call to handle the forwarded message content
+                forward_max_message_to_group(forward_msg, sender_id, sender_profile, True)
 
-
-        # --- ATTACHMENT PROCESSING LOGIC ---
         tg_message_to_map = None
-        caption_sent = False     # Flag to ensure message text is sent only once (as a caption)
-
+        caption_sent = False
         if attachments:
             logging.debug("Processing message %s with %d attachments.", max_message_id, len(attachments))
             media_group_items = []
-            
-            # 1. Categorize attachments to handle them correctly
             for attach in attachments:
                 attach_type = attach.get('_type')
-                
-                match attach_type:
-                    case "PHOTO":
-                        try:
-                            url = attach.get('baseUrl')
-                            file_content = requests.get(url).content
-                            media_group_items.append(types.InputMediaPhoto(file_content))
-                        except Exception as e:
-                            logging.error("Failed to process photo attachment for msg %s: %s", max_message_id, e, exc_info=True)
+                try:
+                    if attach_type == "PHOTO":
+                        url = attach.get('baseUrl')
+                        file_content = requests.get(url, timeout=REQUESTS_TIMEOUT).content
+                        media_group_items.append(types.InputMediaPhoto(file_content))
+                    elif attach_type == "VIDEO":
+                        video = api.get_video(attach.get('videoId'))
+                        media_group_items.append(types.InputMediaVideo(video))
+                    elif attach_type == "FILE":
+                        file, name = api.get_file(attach.get('fileId'), MAX_CHAT_ID, max_message_id)
+                        bot.send_document(TG_CHAT_ID, file, reply_to_message_id, visible_file_name=name, caption="Переслано" if forwarded else None)
+                except requests.exceptions.RequestException as e:
+                    logging.error("Network error downloading attachment for msg %s: %s", max_message_id, e)
+                except Exception as e:
+                    logging.error("Failed to process attachment type '%s' for msg %s: %s", attach_type, max_message_id, e, exc_info=True)
 
-                    case "VIDEO":
-                        try:
-                            video = api.get_video(attach.get('videoId'))
-                            
-                            media_group_items.append(types.InputMediaVideo(video))
-                        except Exception as e:
-                            logging.error("Failed to process video attachment for msg %s: %s", max_message_id, e, exc_info=True)
-                    case "FILE":
-                        try:
-                            file, name = api.get_file(attach.get('fileId'), MAX_CHAT_ID, max_message_id)
-
-                            bot.send_document(TG_CHAT_ID, file, reply_to_message_id, visible_file_name=name, caption="Переслано" if forwarded else None)
-                        except Exception as e:
-                            logging.error("Failed to process file attachment for msg %s: %s", max_message_id, e, exc_info=True)
-                
-                # TODO: Add handler for "STICKER"
-
-            # 2. Send grouped media (photos/videos)
             if media_group_items:
-                # Attach the text content as a caption to the first item in the group
                 if text_content and not caption_sent:
                     media_group_items[0].caption = text_content
                     caption_sent = True
-
-                sent_messages = bot.send_media_group(
-                    TG_CHAT_ID, media_group_items,
-                    reply_to_message_id=reply_to_message_id
-                )
-                # Map the ID of the first message in the album for replies
+                sent_messages = bot.send_media_group(TG_CHAT_ID, media_group_items, reply_to_message_id=reply_to_message_id)
                 tg_message_to_map = sent_messages[0]
-                logging.info("Sent %d items as a media group for Max msg %s.", len(media_group_items), max_message_id)
 
-        # 3. If there's text content that wasn't sent as a caption, send it now
         if not caption_sent and text_content and text_content.strip():
-            tg_message_to_map = bot.send_message(
-                TG_CHAT_ID,
-                text_content,
-                reply_to_message_id=reply_to_message_id
-            )
+            tg_message_to_map = bot.send_message(TG_CHAT_ID, text_content, reply_to_message_id=reply_to_message_id)
 
-        # 4. Save the mapping from Max message ID to the new Telegram message ID
         if tg_message_to_map:
             msgs_map[max_message_id] = tg_message_to_map.message_id
-            logging.debug("Successfully mapped Max message %s to TG message %s.", max_message_id, tg_message_to_map.message_id)
-
+            logging.debug("Mapped Max message %s to TG message %s.", max_message_id, tg_message_to_map.message_id)
     except Exception as e:
         logging.error("Error in forward_max_message_to_group for Max msg %s: %s", message.get('id', 'unknown'), e, exc_info=True)
 
-
 def on_max_event(event_data: dict):
     """
-    Callback function executed on every event from the Max WebSocket.
-    Filters for new messages in the target chat and forwards them.
+    Callback for Max WebSocket events. Filters and forwards new messages.
     """
     global last_message_sender
     api_logger.info(json.dumps(event_data, indent=4))
-
-    # We only care about new messages (opcode 128) that haven't been removed
     if event_data.get("opcode") != 128 or event_data.get("status") == "REMOVED":
         return
-
     payload = event_data.get("payload", {})
     message = payload.get("message", {})
-    
-    # Ignore messages not from our target chat or messages sent by the bot itself
     if payload.get("chatId") != MAX_CHAT_ID or message.get('text', '').startswith(BOT_MESSAGE_PREFIX):
         return
-    
     bot.send_chat_action(TG_CHAT_ID, "typing")
-    
     sender_id = message.get('sender')
     sender_profile = get_sender_profile(sender_id)
-    
-    logging.info(
-        "Received Max message %s from '%s'. Spawning thread to forward.",
-        message.get('id'), sender_profile.get('name')
-    )
-
-    # Use a thread to forward the message to avoid blocking the WebSocket listener
-    forwarding_thread = threading.Thread(
-        target=forward_max_message_to_group,
-        args=(message, last_message_sender, sender_profile)
-    )
-    forwarding_thread.start()
-    
-    # Update the last sender to enable message chaining without name repetition
+    logging.info("Received Max message %s from '%s'. Spawning thread to forward.", message.get('id'), sender_profile.get('name'))
+    threading.Thread(target=forward_max_message_to_group, args=(message, last_message_sender, sender_profile)).start()
     last_message_sender = sender_id
 
 # --- Core Logic: Telegram -> Max ---
 
 @bot.message_handler(commands=['send'])
 def send_handler(msg: types.Message):
-    """
-    Handles /send command in Telegram to forward a message to Max.
-    Constructs the message text and handles replies.
-    """
+    """Handles /send command in Telegram to forward a message to Max."""
     global last_message_sender
     try:
-        # Enforce the time window for sending messages
         now = datetime.now().time()
         if msg.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
             bot.reply_to(msg, f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
-            logging.warning(
-                "Message from '%s' blocked due to time restrictions. Current time: %s",
-                msg.from_user.username, now
-            )
             return
-            
-        logging.info("Received /send command from '%s' (TG Msg ID: %s)", msg.from_user.username, msg.message_id)
-        
-        # Extract text and user info for the message
         text_to_send = msg.text[5:].strip()
         if not text_to_send:
             bot.reply_to(msg, "Нельзя отправить пустое сообщение.")
             return
-
-        first_name = msg.from_user.first_name
-        last_name = msg.from_user.last_name or ""
-        username = f"{first_name} {last_name}".strip()
-        
-        # Format the message to clearly indicate it came from the Telegram bridge
-        sys_part = f"{BOT_MESSAGE_PREFIX} {BOT_MESSAGE_SIGNATURE}"
-        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}\n{sys_part}"
-        
-        # Find the Max message ID to reply to, if any
+        username = f"{msg.from_user.first_name} {msg.from_user.last_name or ''}".strip()
+        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}\n{BOT_MESSAGE_PREFIX} {BOT_MESSAGE_SIGNATURE}"
         reply_to_max_id = None
         if msg.reply_to_message:
             tg_reply_id = msg.reply_to_message.message_id
-            # Invert the msgs_map to find the Max ID from the TG ID
-            for max_id, tg_id in msgs_map.items():
-                if tg_id == tg_reply_id:
-                    reply_to_max_id = max_id
-                    break
-        
+            reply_to_max_id = next((max_id for max_id, tg_id in msgs_map.items() if tg_id == tg_reply_id), None)
         max_msg = api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id, wait_for_response=True, format=True)
-        id = max_msg['payload'].get('message', {}).get('id')
-        if id:
-            msgs_map[id] = msg.message_id
-            logging.info("Successfully mapped Max message %s to TG message %s.", id, msg.message_id)
-        
+        msg_id = max_msg['payload'].get('message', {}).get('id')
+        if msg_id:
+            msgs_map[msg_id] = msg.message_id
             bot.reply_to(msg, 'Отправлено!')
-            logging.info("Sent message from '%s' to Max. Replied to Max ID: %s", username, reply_to_max_id)
-        
-            # Reset last sender so the next Max message will show the sender's name
-            last_message_sender = None
-
+        last_message_sender = None
     except Exception as e:
         logging.error("Error in send_handler: %s", e, exc_info=True)
         bot.reply_to(msg, 'Произошла ошибка при отправке.')
@@ -304,80 +212,147 @@ def send_handler(msg: types.Message):
 
 @bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'video', 'document', 'sticker'])
 def messages_handle(msg: types.Message):
-    """
-    Catches any other message to reset the last_message_sender.
-    This ensures that after any interaction in the TG group, the next
-    message from Max will correctly display the sender's name.
-    """
+    """Catches any other message to reset the last_message_sender."""
     global last_message_sender
     last_message_sender = None
     logging.debug("Reset last_message_sender due to activity in TG chat.")
 
-# --- Main Application ---
-if __name__ == '__main__':
-    def shutdown():
-        print("\nShutting down...")
-        logging.info("Shutdown sequence initiated.")
-        bot.stop_polling()
-        data_handler.save('msgs', msgs_map)
-        logging.info("Message ID map saved. Shutdown complete.")
-        print("Shutdown complete.")
-        sys.exit(0)
+# --- Application Lifecycle, Health, and Restart ---
 
-    def pooling():
-        logging.info("Starting Telegram polling...")
-        while True:
-            try:
-                # We add a timeout to the polling call itself as a first line of defense
-                bot.infinity_polling(timeout=60, long_polling_timeout=30)
-            except requests.exceptions.RequestException as e:
-                # This is a broad catch for all network-related errors from the requests library
-                logging.warning("Telegram polling failed with a network error: %s", e)
-                logging.info("Restarting polling in 15 seconds...")
-                time.sleep(15)
-            except Exception as e:
-                # Catch any other unexpected errors to prevent the thread from crashing
-                logging.warning("An unexpected error occurred in the polling thread: %s", e, exc_info=True)
-                bot.stop_polling()
-                logging.info("Restarting polling in 30 seconds...")
-                time.sleep(30)
-
+def restart_program():
+    """Restarts the current program, replacing this process with a new one."""
+    logging.warning("RESTARTING a new instance of the bot...")
     try:
-        # Initialize the Max API and subscribe to chat events
+        data_handler.save('msgs', msgs_map) # Save data before restarting
+        os.execv(sys.executable, ['python'] + sys.argv)
+    except Exception as e:
+        logging.critical(f"FATAL: Failed to restart bot: {e}")
+        sys.exit(1)
+
+def check_max_api_health():
+    """
+    Performs a simple check to see if the Max API is responsive.
+    Returns True if healthy, False otherwise.
+    """
+    try:
+        # A lightweight call to check API status.
+        # Using get_contact_details on the admin user as a proxy for a health check.
+        api.send_generic_command('HEARTBEAT', {})
+        return True
+    except Exception as e:
+        logging.warning("Max API health check failed: %s", e)
+        return False
+
+def watchdog(polling_thread):
+    """
+    Monitors the health of the bot's core components (API connection, threads).
+    Triggers a restart if a critical component fails repeatedly.
+    """
+    global max_api_failures
+    logging.info("Watchdog thread started. Monitoring bot health.")
+    while not shutdown_event.is_set():
+        # 1. Check Max API Health
+        if not check_max_api_health():
+            max_api_failures += 1
+            logging.warning(f"Max API connection unstable. Failure count: {max_api_failures}/{MAX_API_FAILURE_THRESHOLD}")
+        else:
+            if max_api_failures > 0:
+                logging.info("Max API connection has recovered.")
+            max_api_failures = 0 # Reset counter on success
+
+        # 2. Check if Telegram Polling thread has died
+        if not polling_thread.is_alive():
+            logging.critical("Telegram polling thread has died unexpectedly!")
+            shutdown_event.set() # Signal shutdown
+            restart_program()
+            return # Exit watchdog thread
+
+        # 3. Trigger restart if failure threshold is met
+        if max_api_failures >= MAX_API_FAILURE_THRESHOLD:
+            logging.critical(f"Max API has been unresponsive for {max_api_failures} consecutive checks. Triggering restart.")
+            shutdown_event.set() # Signal shutdown
+            restart_program()
+            return # Exit watchdog thread
+            
+        # Wait for the next check interval
+        shutdown_event.wait(HEALTH_CHECK_INTERVAL)
+
+def polling():
+    """Target function for the Telegram polling thread with robust error handling."""
+    logging.info("Starting Telegram polling...")
+    while not shutdown_event.is_set():
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        except (requests.exceptions.RequestException, ConnectionResetError) as e:
+            logging.warning("Telegram polling network error: %s. Reconnecting in 15 seconds...", e)
+            time.sleep(15)
+        except Exception as e:
+            logging.error("An unexpected error occurred in the polling thread: %s", e, exc_info=True)
+            bot.stop_polling()
+            time.sleep(30) # Wait longer for unexpected errors before retrying
+
+def run_bot():
+    """Initializes and runs the main bot components."""
+    global api
+    try:
         api = MaxBridge.MaxAPI(auth_token=MAX_AUTH_TOKEN, on_event=on_max_event)
         api.subscribe_to_chat(MAX_CHAT_ID)
     except Exception as e:
         logging.critical("Failed to initialize and connect to Max API: %s", e, exc_info=True)
         sys.exit(1)
 
-    BOT_START_MESSAGE = BOT_START_MESSAGE.replace("TG_CHAT_INVITE_LINK", bot.export_chat_invite_link(TG_CHAT_ID))
-    if BOT_START_MESSAGE != "" and not data_handler.load("started"):
+    # Send startup message if not sent before
+    invite_link = bot.export_chat_invite_link(TG_CHAT_ID)
+    start_message = BOT_START_MESSAGE.replace("TG_CHAT_INVITE_LINK", invite_link)
+    if start_message and not data_handler.load("started"):
         data_handler.save("started", True)
-        api.send_message(MAX_CHAT_ID, BOT_START_MESSAGE, format=True)
+        api.send_message(MAX_CHAT_ID, start_message, format=True)
 
-    # Start the Telegram polling in a separate, daemonized thread
-    polling_thread = threading.Thread(target=pooling, name="TelebotPolling", daemon=True)
+    # Start Telegram polling and Watchdog in separate threads
+    polling_thread = threading.Thread(target=polling, name="TelebotPolling", daemon=True)
+    watchdog_thread = threading.Thread(target=watchdog, args=(polling_thread,), name="Watchdog", daemon=True)
+    
     polling_thread.start()
-
+    watchdog_thread.start()
+    
     logging.info("Bot started successfully. Transfer is active.")
+    return [polling_thread, watchdog_thread]
 
+def main():
+    """Main entry point of the application."""
+    threads = run_bot()
+    
+    def shutdown(signum=None, frame=None):
+        print("\nShutting down gracefully...")
+        logging.info("Shutdown sequence initiated.")
+        shutdown_event.set() # Signal all threads to stop
+        bot.stop_polling()
+        data_handler.save('msgs', msgs_map)
+        for thread in threads:
+            if thread.is_alive():
+                thread.join(timeout=5) # Wait for threads to finish
+        logging.info("Message ID map saved. Shutdown complete.")
+        print("Shutdown complete.")
+        sys.exit(0)
+
+    # Handle termination signals for graceful shutdown
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    # Keep the main thread alive to handle signals and user input
     if os.getenv("IS_DOCKER"):
-        signal.signal(signal.SIGTERM, lambda a, b: shutdown())
-        while True:
+        while not shutdown_event.is_set():
             time.sleep(1)
     else:
-        signal.signal(signal.SIGINT, lambda a, b: shutdown())
         print(f'{Fore.YELLOW}Enter "exit" or press Ctrl+C to shutdown.{Style.RESET_ALL}')
         try:
             while True:
                 cmd = input().strip().lower()
-                match cmd:
-                    case "exit":
-                        shutdown()
-                    case "send_tg":
-                        bot.send_message(TG_CHAT_ID, "Админ:")
-                        bot.send_message(TG_CHAT_ID, input("message: "))
-                    case "send_max":
-                        api.send_message(MAX_CHAT_ID, f"{BOT_MESSAGE_PREFIX} {input("message: ")}")
-        except Exception as e:
-            logging.error("Error: %s", e)
+                if cmd == "exit":
+                    shutdown()
+                    break
+        except (EOFError, KeyboardInterrupt):
+             shutdown()
+
+if __name__ == '__main__':
+    main()
