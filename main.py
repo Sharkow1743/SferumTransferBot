@@ -35,9 +35,10 @@ END_TIME = t(22, 0)
 # Health Check and Restart Configuration
 HEALTH_CHECK_INTERVAL = 300  # Check API health every 5 minutes (300 seconds)
 MAX_API_FAILURE_THRESHOLD = 3  # Restart bot after 3 consecutive failed health checks
+
 REQUESTS_TIMEOUT = 15 # Timeout in seconds for downloading attachments
 
-BOT_MESSAGE_SIGNATURE = ""
+BOT_POST_MESSAGE = ""
 BOT_MESSAGE_PREFIX = "⫻"
 BOT_START_MESSAGE = f""
 
@@ -194,7 +195,7 @@ def send_handler(msg: types.Message):
             bot.reply_to(msg, "Нельзя отправить пустое сообщение.")
             return
         username = f"{msg.from_user.first_name} {msg.from_user.last_name or ''}".strip()
-        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}\n{BOT_MESSAGE_PREFIX} {BOT_MESSAGE_SIGNATURE}"
+        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}{f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}" if BOT_POST_MESSAGE else ""}"
         reply_to_max_id = None
         if msg.reply_to_message:
             tg_reply_id = msg.reply_to_message.message_id
@@ -220,7 +221,6 @@ def messages_handle(msg: types.Message):
 # --- Application Lifecycle, Health, and Restart ---
 
 def restart_program():
-    """Restarts the current program, replacing this process with a new one."""
     logging.warning("RESTARTING a new instance of the bot...")
     try:
         data_handler.save('msgs', msgs_map) # Save data before restarting
@@ -230,13 +230,7 @@ def restart_program():
         sys.exit(1)
 
 def check_max_api_health():
-    """
-    Performs a simple check to see if the Max API is responsive.
-    Returns True if healthy, False otherwise.
-    """
     try:
-        # A lightweight call to check API status.
-        # Using get_contact_details on the admin user as a proxy for a health check.
         api.send_generic_command('HEARTBEAT', {})
         return True
     except Exception as e:
@@ -244,10 +238,6 @@ def check_max_api_health():
         return False
 
 def watchdog(polling_thread):
-    """
-    Monitors the health of the bot's core components (API connection, threads).
-    Triggers a restart if a critical component fails repeatedly.
-    """
     global max_api_failures
     logging.info("Watchdog thread started. Monitoring bot health.")
     while not shutdown_event.is_set():
@@ -258,21 +248,21 @@ def watchdog(polling_thread):
         else:
             if max_api_failures > 0:
                 logging.info("Max API connection has recovered.")
-            max_api_failures = 0 # Reset counter on success
+            max_api_failures = 0
 
         # 2. Check if Telegram Polling thread has died
         if not polling_thread.is_alive():
-            logging.critical("Telegram polling thread has died unexpectedly!")
-            shutdown_event.set() # Signal shutdown
+            logging.critical("Telegram polling thread has died unexpectedly.")
+            shutdown_event.set()
             restart_program()
-            return # Exit watchdog thread
+            return
 
         # 3. Trigger restart if failure threshold is met
         if max_api_failures >= MAX_API_FAILURE_THRESHOLD:
             logging.critical(f"Max API has been unresponsive for {max_api_failures} consecutive checks. Triggering restart.")
-            shutdown_event.set() # Signal shutdown
+            shutdown_event.set()
             restart_program()
-            return # Exit watchdog thread
+            return
             
         # Wait for the next check interval
         shutdown_event.wait(HEALTH_CHECK_INTERVAL)
