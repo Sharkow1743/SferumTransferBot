@@ -185,26 +185,46 @@ def on_max_event(event_data: dict):
 def send_handler(msg: types.Message):
     """Handles /send command in Telegram to forward a message to Max."""
     global last_message_sender
+    
     try:
+        # Check time
         now = datetime.now().time()
         if msg.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
             bot.reply_to(msg, f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
+            last_message_sender = None
             return
+        
+        # Check empty message
         text_to_send = msg.text[5:].strip()
         if not text_to_send:
             bot.reply_to(msg, "Нельзя отправить пустое сообщение.")
+            last_message_sender = None
             return
-        username = f"{msg.from_user.first_name} {msg.from_user.last_name or ''}".strip()
+        
+        # Get username
+        first_name = msg.from_user.first_name
+        if not first_name or first_name.isspace():
+            first_name = msg.from_user.username
+        username = f"{first_name} {msg.from_user.last_name or ''}".strip()
+
+        # Create full text
         full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}{f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}" if BOT_POST_MESSAGE else ""}"
+
+        # Get id of replied message in MAX if reply
         reply_to_max_id = None
         if msg.reply_to_message:
             tg_reply_id = msg.reply_to_message.message_id
             reply_to_max_id = next((max_id for max_id, tg_id in msgs_map.items() if tg_id == tg_reply_id), None)
+
+        # Send message
         max_msg = api.send_message(chat_id=MAX_CHAT_ID, text=full_text, reply_id=reply_to_max_id, wait_for_response=True, format=True)
+
+        # If success, map message and send 'Отправлено!'
         msg_id = max_msg['payload'].get('message', {}).get('id')
         if msg_id:
             msgs_map[msg_id] = msg.message_id
             bot.reply_to(msg, 'Отправлено!')
+        
         last_message_sender = None
     except Exception as e:
         logging.error("Error in send_handler: %s", e, exc_info=True)
