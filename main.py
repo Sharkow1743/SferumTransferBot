@@ -38,9 +38,9 @@ MAX_API_FAILURE_THRESHOLD = 3  # Restart bot after 3 consecutive failed health c
 
 REQUESTS_TIMEOUT = 15 # Timeout in seconds for downloading attachments
 
-BOT_POST_MESSAGE = ""
-BOT_MESSAGE_PREFIX = "⫻"
-BOT_START_MESSAGE = f""
+BOT_POST_MESSAGE = "" # What bot adds to end of message when sending to max
+BOT_MESSAGE_PREFIX = "⫻" # What bot ads to the start of the message when sending to max. Also helps identifying bot`s messages, so don`t leave this empty
+BOT_START_MESSAGE = f"" # What bot sends to max with first launch
 
 # --- Environment Variables & Validation ---
 try:
@@ -366,4 +366,5 @@ def main():
              shutdown()
 
 if __name__ == '__main__':
+
     main()
