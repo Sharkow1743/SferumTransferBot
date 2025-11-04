@@ -203,6 +203,7 @@ def send_handler(msg: types.Message):
         
         # Get username
         first_name = msg.from_user.first_name
+        first_name = first_name.replace('\uFE0E', '').replace('\u1160', '')
         if not first_name or first_name.isspace():
             first_name = msg.from_user.username
         username = f"{first_name} {msg.from_user.last_name or ''}".strip()
