@@ -160,13 +160,24 @@ def forward_max_message_to_group(message: dict, prev_sender: int, sender_profile
     except Exception as e:
         logging.error("Error in forward_max_message_to_group for Max msg %s: %s", message.get('id', 'unknown'), e, exc_info=True)
 
+def edit_tg_message(message):
+    max_message_id = message.get('id')
+    text = message.get('text')
+    tg_message_id = msgs_map[max_message_id]
+    bot.edit_message_text(text, TG_CHAT_ID, tg_message_id)
+
+def delete_tg_message(message):
+    max_message_id = message.get('id')
+    tg_message_id = msgs_map[max_message_id]
+    bot.send_message(TG_CHAT_ID, 'Сообщение было удалено', reply_parameters=telebot.types.ReplyParameters(tg_message_id))
+
 def on_max_event(event_data: dict):
     """
     Callback for Max WebSocket events. Filters and forwards new messages.
     """
     global last_message_sender
     api_logger.info(json.dumps(event_data, indent=4))
-    if event_data.get("opcode") != 128 or event_data.get("status") == "REMOVED":
+    if event_data.get("opcode") != 128:
         return
     payload = event_data.get("payload", {})
     message = payload.get("message", {})
@@ -176,7 +187,13 @@ def on_max_event(event_data: dict):
     sender_id = message.get('sender')
     sender_profile = get_sender_profile(sender_id)
     logging.info("Received Max message %s from '%s'. Spawning thread to forward.", message.get('id'), sender_profile.get('name'))
-    threading.Thread(target=forward_max_message_to_group, args=(message, last_message_sender, sender_profile)).start()
+    match message.get("status"):
+        case "REMOVED":
+            delete_tg_message(message)
+        case "EDITED":
+            edit_tg_message(message)
+        case _:
+            threading.Thread(target=forward_max_message_to_group, args=(message, last_message_sender, sender_profile)).start()
     last_message_sender = sender_id
 
 # --- Core Logic: Telegram -> Max ---
