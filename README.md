@@ -106,3 +106,8 @@
 ```bash
 python main.py
 ```
+
+Или
+
+Используя docker:
+https://hub.docker.com/repository/docker/sharkow1743/sferumtransferbot/general
