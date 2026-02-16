@@ -226,7 +226,7 @@ def send_handler(msg: types.Message):
         username = f"{first_name} {msg.from_user.last_name or ''}".strip()
 
         # Create full text
-        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}{f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}" if BOT_POST_MESSAGE else ""}"
+        full_text = f"{BOT_MESSAGE_PREFIX} {username} написал(-а):\n{text_to_send}{f'\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}' if BOT_POST_MESSAGE else ''}"
 
         # Get id of replied message in MAX if reply
         reply_to_max_id = None
@@ -385,3 +385,4 @@ def main():
 if __name__ == '__main__':
 
     main()
+
