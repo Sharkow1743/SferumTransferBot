@@ -92,7 +92,7 @@
 
         Нажмите <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>, после чего откроются параметры для разработчиков.
 
-        Перейдите в раздел `Application` (Приложение) >> `Storage` (Хранилище) >> `Cookies` (Файлы cookie) >> `https://web.max.ru`.
+        Перейдите в раздел `Application` (Приложение) >> `Storage` (Хранилище) >> `Local Storage` (Локальное хранилище) >> `https://web.max.ru`.
 
         Затем введите в поле поиска "__oneme_auth" и скопируйте его значение.
 
