@@ -3,3 +3,4 @@ aiohttp
 colorama
 maxapi-python
 python-dotenv
+requests
