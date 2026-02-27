@@ -1,5 +1,5 @@
+aiogram
+aiohttp
 colorama
-pyTelegramBotAPI
+pymax
 python-dotenv
-Requests
-MaxBridge

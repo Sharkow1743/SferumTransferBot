@@ -111,7 +111,7 @@ async def get_smart_sender_info(user_id: int):
 
 # --- Logic: Max -> Telegram ---
 
-async def process_max_message(message: Message, forwarded: bool = False) -> int:
+async def process_max_message(message: Message, forwarded: bool = False) -> int | None:
     """
     Handles messages. Returns the Telegram Message ID of the first part sent.
     """
