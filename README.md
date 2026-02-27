@@ -1,5 +1,9 @@
 # Sferum Transfer Bot
 
+> [!WARNING]  
+> Возможно не будет работать, так как у меня нет возможности тестировать.
+> Может блокировать аккаунт [#10](https://github.com/Sharkow1743/SferumTransferBot/issues/10#issue-3961856910)
+
 Это бот, который пересылает сообщения из Max в Telegram.
 
 ## Что он умеет
@@ -88,7 +92,7 @@
 
         Нажмите <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>, после чего откроются параметры для разработчиков.
 
-        Перейдите в раздел `Application` (Приложение) >> `Storage` (Хранилище) >> `Cookies` (Файлы cookie) >> `https://web.max.ru`.
+        Перейдите в раздел `Application` (Приложение) >> `Storage` (Хранилище) >> `Local Storage` (Локальное хранилище) >> `https://web.max.ru`.
 
         Затем введите в поле поиска "__oneme_auth" и скопируйте его значение.
 
@@ -106,3 +110,8 @@
 ```bash
 python main.py
 ```
+
+Или
+
+Используя docker:
+https://hub.docker.com/repository/docker/sharkow1743/sferumtransferbot/general

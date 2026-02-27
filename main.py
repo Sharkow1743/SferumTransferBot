@@ -46,9 +46,7 @@ try:
     TG_CHAT_ID = os.getenv('TG_CHAT_ID')
     TG_TOKEN = os.getenv('TG_TOKEN')
     ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID'))
-
-
-    if not all([MAX_CHAT_ID, MAX_TOKEN, TG_CHAT_ID, TG_TOKEN, ADMIN_USER_ID]):
+    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_TOKEN]):
         raise ValueError("One or more environment variables are not set.")
 except (ValueError, TypeError) as e:
     logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
@@ -228,9 +226,7 @@ async def send_handler(msg: types.Message):
         username = msg.from_user.full_name or msg.from_user.username
         
         # Create full text
-        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}"
-        if BOT_POST_MESSAGE:
-            full_text += f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}"
+        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}{f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}" if BOT_POST_MESSAGE else ""}"
 
         # Get id of replied message in MAX
         reply_to_max_id = None
@@ -320,7 +316,5 @@ async def main():
         logging.info("Shutdown complete.")
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot stopped.")
+
+    main()
