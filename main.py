@@ -66,9 +66,9 @@ dp = Dispatcher()
 
 # Reconnect=True effectively replaces the "Watchdog" thread
 if USE_SOCKET_CLIENT:
-    client = SocketMaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True, reconnect=False)
+    client = SocketMaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
 else:
-    client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True, reconnect=False)
+    client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
 
 
 # --- Helper Functions ---
