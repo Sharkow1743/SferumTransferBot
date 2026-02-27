@@ -66,9 +66,9 @@ dp = Dispatcher()
 
 # Reconnect=True effectively replaces the "Watchdog" thread
 if USE_SOCKET_CLIENT:
-    client = SocketMaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
+    client = SocketMaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True, reconnect=False)
 else:
-    client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
+    client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True, reconnect=False)
 
 
 # --- Helper Functions ---
@@ -305,58 +305,42 @@ async def on_startup():
             logging.error(f"Failed to send startup message: {e}")
 
 async def main():
-    # Setup Signal Handling
-    loop = asyncio.get_running_loop()
+    # 1. Setup Signal Handling
     stop_event = asyncio.Event()
-
-    def stop_signal_handler():
-        logging.warning("Shutdown signal received.")
-        stop_event.set()
-
-    # ONLY add signal handlers if NOT on Windows
+    loop = asyncio.get_running_loop()
     if os.name != 'nt': 
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop_signal_handler)
-    else:
-        logging.info("Running on Windows: Use Ctrl+C to stop the bot.")
+            loop.add_signal_handler(sig, stop_event.set)
 
-    # Start Max Client
-    logging.info("Initializing Max Client...")
-    # Note: Ensure client.start() is awaited or run as a task depending on PyMax version
-    await client.start()
-
-    # Start Telegram Poller
+    # 2. Start Telegram Poller FIRST (as a background task)
     logging.info("Starting Telegram Polling...")
+    # This creates the task but doesn't block execution
     tg_task = asyncio.create_task(dp.start_polling(bot))
 
+    # 3. Run startup logic (invite links, etc.)
     await on_startup()
-    
+
+    # 4. Start Max Client (This blocks and keeps the script alive)
+    logging.info("Initializing Max Client...")
     try:
-        # On Windows, this will wait until the program is interrupted
-        # On Linux, this will also wait for the stop_event (SIGINT/SIGTERM)
-        if os.name != 'nt':
-            await stop_event.wait()
-        else:
-            # Keep the loop alive on Windows until KeyboardInterrupt
-            while True:
-                await asyncio.sleep(3600)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logging.warning("Manual stop triggered.")
+        # We use a task for Max as well to allow clean shutdowns
+        max_task = asyncio.create_task(client.start())
+        
+        # Wait for either the stop signal or the tasks to fail
+        done, pending = await asyncio.wait(
+            [tg_task, max_task, stop_event.wait()],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+    except Exception as e:
+        logging.error(f"Critical error in main loop: {e}")
     finally:
         logging.info("Shutting down...")
-        
-        # Save data
         data_handler.save('msgs', msgs_map)
-        logging.info("Message map saved.")
         
-        # Stop Telegram
+        # Clean up tasks
         tg_task.cancel()
-        try:
-            await tg_task
-        except asyncio.CancelledError:
-            pass
+        max_task.cancel()
         
-        # Stop Max
         await client.close()
         await bot.session.close()
         logging.info("Shutdown complete.")
