@@ -48,8 +48,8 @@ try:
     TG_CHAT_ID = os.getenv('TG_CHAT_ID')
     TG_TOKEN = os.getenv('TG_TOKEN')
     MAX_AUTH_TOKEN = os.getenv('VK_COOKIE')
-    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID'))
-    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN, ADMIN_USER_ID]):
+    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID')) if os.getenv('ADMIN_USER_ID') else 0
+    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_AUTH_TOKEN]):
         raise ValueError("One or more environment variables are not set.")
 except (ValueError, TypeError) as e:
     logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
@@ -385,4 +385,5 @@ def main():
 if __name__ == '__main__':
 
     main()
+
 
