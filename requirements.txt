@@ -1,5 +1,5 @@
 aiogram
 aiohttp
 colorama
-pymax
+maxapi-python
 python-dotenv
