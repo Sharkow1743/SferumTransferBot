@@ -1,7 +1,6 @@
 # Sferum Transfer Bot
 
 > [!WARNING]  
-> Возможно не будет работать, так как у меня нет возможности тестировать.
 > Может блокировать аккаунт [#10](https://github.com/Sharkow1743/SferumTransferBot/issues/10#issue-3961856910)
 
 Это бот, который пересылает сообщения из Max в Telegram.
@@ -53,11 +52,12 @@
 
     Добавьте переменные:
     ```env
-    VK_CHAT_ID=ваш_vk_chat_id 
-    TG_CHAT_ID=ваш_telegram_chat_id 
-    TG_TOKEN=ваш_telegram_token 
-    VK_COOKIE=ваш_vk_cookie
-    ADMIN_USER_ID=ваш_id_в_телеграме(необязательно)
+    VK_PHONE=ваш номер телефона
+    VK_CHAT_ID=id чата в максе из которого будут пересылатся сообщения
+    TG_CHAT_ID=id чата в тг в который будут пересылатся сообщения
+    TG_TOKEN=токен бота в тг 
+    VK_COOKIE=токен в максе
+    ADMIN_USER_ID=id в телеграме (необязательно)
     ```
 
     - VK_CHAT_ID
