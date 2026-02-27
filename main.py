@@ -328,7 +328,7 @@ async def main():
         
         # Wait for either the stop signal or the tasks to fail
         done, pending = await asyncio.wait(
-            [tg_task, max_task, stop_event.wait()],
+            [tg_task, max_task, await stop_event.wait()],
             return_when=asyncio.FIRST_COMPLETED
         )
     except Exception as e:
