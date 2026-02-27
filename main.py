@@ -15,9 +15,10 @@ from colorama import Fore, Style
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile
+from aiogram.exceptions import TelegramBadRequest
 
 # PyMax Imports
-from pymax import MaxClient, Message
+from pymax import SocketMaxClient, MaxClient, Message
 from pymax.types import FileAttach, PhotoAttach, VideoAttach
 
 # Local Application Imports
@@ -41,12 +42,15 @@ REQUESTS_TIMEOUT = 15
 
 # --- Environment Variables ---
 try:
+    USE_SOCKET_CLIENT = os.getenv('USE_SOCKET_CLIENT', 'false')
+    USE_SOCKET_CLIENT = True if USE_SOCKET_CLIENT.lower() == 'true' else False
+    MAX_PHONE = os.getenv('VK_PHONE')
     MAX_CHAT_ID = int(os.getenv('VK_CHAT_ID'))
-    MAX_TOKEN = os.getenv('VK_COOKIE', '')
+    MAX_TOKEN = os.getenv('VK_COOKIE')
     TG_CHAT_ID = os.getenv('TG_CHAT_ID')
     TG_TOKEN = os.getenv('TG_TOKEN')
-    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID'))
-    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_TOKEN]):
+    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', 0))
+    if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_TOKEN, MAX_PHONE]):
         raise ValueError("One or more environment variables are not set.")
 except (ValueError, TypeError) as e:
     logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
@@ -54,13 +58,17 @@ except (ValueError, TypeError) as e:
 
 # --- State ---
 msgs_map = data_handler.load('msgs') or {}
+last_sender_id = None
 
 # --- API Initialization ---
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
 
 # Reconnect=True effectively replaces the "Watchdog" thread
-client = MaxClient(token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
+if USE_SOCKET_CLIENT:
+    client = SocketMaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
+else:
+    client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
 
 
 # --- Helper Functions ---
@@ -88,65 +96,90 @@ async def get_sender_name(user_id: int) -> str:
 
 # --- Logic: Max -> Telegram ---
 
-async def process_max_message(message: Message, forwarded: bool = False):
-    """
-    Recursive function to handle Max messages, attachments, and forwards.
-    """
+async def get_smart_sender_info(user_id: int):
+    """Fetches name and determines gender-specific verb suffix."""
     try:
-        # 1. Filter Check
-        if message.chat_id != MAX_CHAT_ID:
-            return
-        if message.text and message.text.startswith(BOT_MESSAGE_PREFIX):
-            return
+        user = await client.get_user(user_id=user_id)
+        if user:
+            name = f"{user.names[0].name}" if user.names else f"User {user_id}"
+            # Sex: 1 is Female, 2 is Male. Default to 'л' (male/neutral)
+            suffix = "ла" if user.gender == 1 else "л"
+            return name, suffix
+    except Exception as e:
+        logging.error(f"Error fetching user {user_id}: {e}")
+    return f"User {user_id}", "л(-а)"
 
-        # 2. Prepare Sender Info
-        sender_name = await get_sender_name(message.sender)
+# --- Logic: Max -> Telegram ---
+
+async def process_max_message(message: Message, forwarded: bool = False) -> int:
+    """
+    Handles messages. Returns the Telegram Message ID of the first part sent.
+    """
+    global last_sender_id
+    
+    # 1. Top-level filter
+    if not forwarded and message.chat_id != MAX_CHAT_ID:
+        return None
+    if message.text and message.text.startswith(BOT_MESSAGE_PREFIX):
+        return None
+
+    msg_id_str = str(message.id) if message.id else "FWD_PART"
+    logging.info(f"Processing Max Message ID: {msg_id_str} (Forwarded: {forwarded})")
+
+    # This will track the FIRST Telegram ID associated with this Max message
+    first_tg_id = None
+
+    try:
+        sender_name, gender_suffix = await get_smart_sender_info(message.sender)
         
+        # 2. Header Logic
+        if not forwarded and last_sender_id != message.sender:
+            header_text = f"{BOT_MESSAGE_PREFIX} *{sender_name} написа{gender_suffix}:*"
+            sent_header = await bot.send_message(TG_CHAT_ID, header_text, parse_mode="Markdown")
+            first_tg_id = sent_header.message_id
+            last_sender_id = message.sender
 
+        # 3. Reply Mapping (Lookup)
         reply_to_tg_id = None
-        link_type = message.link.type
-        if link_type == 'REPLY':
-            replied_max_id = message.link.message.id
+        if message.link and message.link.type == 'REPLY':
+            replied_max_id = str(message.link.message.id)
             reply_to_tg_id = msgs_map.get(replied_max_id)
             if reply_to_tg_id:
-                logging.debug("Found TG message %s to reply to for Max message %s", reply_to_tg_id, message.id)
-        elif link_type == 'FORWARD':
-            forward_msg = message.link.message
-            if forward_msg:
-                # Recursively call to handle the forwarded message content
-                process_max_message(forward_msg, True)
-        
-        # 4. Handle Text Formatting
+                logging.info(f"Reply Link: Max[{replied_max_id}] -> TG[{reply_to_tg_id}]")
+
+        # 4. Forward Recursion
+        fwds_to_process = []
+        if message.link and message.link.type == 'FORWARD':
+            fwds_to_process.append(message.link.message)
+        if hasattr(message, 'fwd_messages') and message.fwd_messages:
+            fwds_to_process.extend(message.fwd_messages)
+
+        for fwd_msg in fwds_to_process:
+            # Recursive call returns the TG ID of the forwarded message
+            fwd_tg_id = await process_max_message(fwd_msg, forwarded=True)
+            # If our container doesn't have a TG ID yet (no header), use the first forward's ID
+            if first_tg_id is None:
+                first_tg_id = fwd_tg_id
+
+        # 5. Content Prep
         text_content = message.text or ""
-        if forwarded and text_content:
-            text_content = f"Переслано:\n{text_content}"
+        if forwarded:
+            text_content = f"↪S_Переслано от {sender_name}:_\n{text_content}"
         
-        header = ""
-        if not forwarded:
-            header = f"*{sender_name}*:"
-
-        caption = f"{header}\n{text_content}".strip()
-        
-        tg_message_id = None
-
-        # 6. Handle Attachments
+        # 6. Attachments
         if message.attaches:
-            # Grouping media is complex in async without mapped IDs, 
-            # sending individually or best-effort for now similar to original logic.
             for attach in message.attaches:
+                sent = None
                 try:
                     if isinstance(attach, PhotoAttach):
                         f_bytes = await download_content(attach.base_url)
                         sent = await bot.send_photo(
                             TG_CHAT_ID,
                             photo=BufferedInputFile(f_bytes.getvalue(), filename="photo.jpg"),
-                            caption=caption if caption else None,
-                            parse_mode="Markdown",
-                            reply_to_message_id=reply_to_tg_id
+                            caption=text_content if text_content else None,
+                            reply_to_message_id=reply_to_tg_id,
+                            parse_mode="Markdown"
                         )
-                        tg_message_id = sent.message_id
-                        caption = "" # Clear caption after first attachment
-
                     elif isinstance(attach, VideoAttach):
                         vid_info = await client.get_video_by_id(message.chat_id, message.id, attach.video_id)
                         if vid_info and vid_info.url:
@@ -154,55 +187,55 @@ async def process_max_message(message: Message, forwarded: bool = False):
                             sent = await bot.send_video(
                                 TG_CHAT_ID,
                                 video=BufferedInputFile(f_bytes.getvalue(), filename="video.mp4"),
-                                caption=caption if caption else None,
-                                parse_mode="Markdown",
-                                reply_to_message_id=reply_to_tg_id
+                                caption=text_content if text_content else None,
+                                reply_to_message_id=reply_to_tg_id,
+                                parse_mode="Markdown"
                             )
-                            tg_message_id = sent.message_id
-                            caption = ""
-
                     elif isinstance(attach, FileAttach):
                         file_info = await client.get_file_by_id(message.chat_id, message.id, attach.file_id)
                         if file_info and file_info.url:
                             f_bytes = await download_content(file_info.url)
                             sent = await bot.send_document(
                                 TG_CHAT_ID,
-                                document=BufferedInputFile(f_bytes.getvalue(), filename=getattr(file_info, 'name', 'doc')),
-                                caption=caption if caption else None,
-                                parse_mode="Markdown",
-                                reply_to_message_id=reply_to_tg_id
+                                document=BufferedInputFile(f_bytes.getvalue(), filename=getattr(file_info, 'name', 'file')),
+                                caption=text_content if text_content else None,
+                                reply_to_message_id=reply_to_tg_id,
+                                parse_mode="Markdown"
                             )
-                            tg_message_id = sent.message_id
-                            caption = ""
 
+                    if sent:
+                        if first_tg_id is None: first_tg_id = sent.message_id
+                        text_content = "" # Only send caption once
                 except Exception as e:
-                    logging.error(f"Failed to process attachment for msg {message.id}: {e}")
+                    logging.error(f"Attachment error: {e}")
 
-        # 7. Send Text (if no attachments carried the caption)
-        if caption:
-            sent = await bot.send_message(
-                TG_CHAT_ID, 
-                caption, 
-                parse_mode="Markdown", 
-                reply_to_message_id=reply_to_tg_id
+        # 7. Remaining Text
+        if text_content.strip():
+            sent_msg = await bot.send_message(
+                TG_CHAT_ID,
+                text_content,
+                reply_to_message_id=reply_to_tg_id,
+                parse_mode="Markdown"
             )
-            tg_message_id = sent.message_id
+            if first_tg_id is None: first_tg_id = sent_msg.message_id
 
-        # 8. Map IDs
-        if tg_message_id and message.id:
-            msgs_map[str(message.id)] = tg_message_id
-            logging.debug(f"Mapped Max {message.id} -> TG {tg_message_id}")
+        # 8. Save Mapping
+        # We save mapping for both forwarded items and top-level containers
+        if first_tg_id and message.id:
+            msgs_map[str(message.id)] = first_tg_id
+            data_handler.save('msgs', msgs_map)
+            logging.info(f"Mapping Saved: Max[{message.id}] == TG[{first_tg_id}]")
+
+        return first_tg_id
 
     except Exception as e:
-        logging.error(f"Error in process_max_message: {e}", exc_info=True)
+        logging.error(f"Error: {e}", exc_info=True)
+        return None
 
 @client.on_message()
 async def max_message_handler(message: Message):
     # PyMax entry point
     await process_max_message(message)
-
-# Note: PyMax might not have explicit events for EDITED/REMOVED in the high-level handler 
-# depending on version. If needed, one observes raw events, but standard handler handles new messages.
 
 # --- Logic: Telegram -> Max ---
 
@@ -226,7 +259,9 @@ async def send_handler(msg: types.Message):
         username = msg.from_user.full_name or msg.from_user.username
         
         # Create full text
-        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}{f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}" if BOT_POST_MESSAGE else ""}"
+        full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}"
+        if BOT_POST_MESSAGE:
+            full_text += f"\n{BOT_MESSAGE_PREFIX} {BOT_POST_MESSAGE}"
 
         # Get id of replied message in MAX
         reply_to_max_id = None
@@ -270,7 +305,7 @@ async def on_startup():
             logging.error(f"Failed to send startup message: {e}")
 
 async def main():
-    # Setup Signal Handling for Docker
+    # Setup Signal Handling
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -278,13 +313,16 @@ async def main():
         logging.warning("Shutdown signal received.")
         stop_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_signal_handler)
+    # ONLY add signal handlers if NOT on Windows
+    if os.name != 'nt': 
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop_signal_handler)
+    else:
+        logging.info("Running on Windows: Use Ctrl+C to stop the bot.")
 
     # Start Max Client
-    # PyMax 1.x/2.x: start() usually initializes the polling loop. 
-    # We run it as a task so we can also run the Telegram poller.
     logging.info("Initializing Max Client...")
+    # Note: Ensure client.start() is awaited or run as a task depending on PyMax version
     await client.start()
 
     # Start Telegram Poller
@@ -293,9 +331,17 @@ async def main():
 
     await on_startup()
     
-    # Keep running until signal
     try:
-        await stop_event.wait()
+        # On Windows, this will wait until the program is interrupted
+        # On Linux, this will also wait for the stop_event (SIGINT/SIGTERM)
+        if os.name != 'nt':
+            await stop_event.wait()
+        else:
+            # Keep the loop alive on Windows until KeyboardInterrupt
+            while True:
+                await asyncio.sleep(3600)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logging.warning("Manual stop triggered.")
     finally:
         logging.info("Shutting down...")
         
@@ -316,5 +362,7 @@ async def main():
         logging.info("Shutdown complete.")
 
 if __name__ == '__main__':
-
-    main()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped.")
