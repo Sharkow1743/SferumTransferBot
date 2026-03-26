@@ -24,13 +24,15 @@ logging.getLogger("api_logger")
 load_dotenv()
 
 # --- Constants & Configuration ---
+CHECK_TIME = False # проверять ли время перед отправкой сообщения (если да, то давать ошибку если START_TIME <= now <= END_TIME)
 START_TIME = t(7, 0)
 END_TIME = t(22, 0)
-BOT_POST_MESSAGE = ""
-BOT_MESSAGE_PREFIX = "⫻"
-BOT_START_MESSAGE = None
 
-REQUESTS_TIMEOUT = 15
+BOT_POST_MESSAGE = None # доп текст в сообщении от бота
+BOT_MESSAGE_PREFIX = "⫻" # префикс для отпарвляемых сообщений
+BOT_START_MESSAGE = None # стартовое сообщение бота отпарвляемое в макс при запуске (если None, то не отпралвять)
+
+REQUESTS_TIMEOUT = 15 # таймаут запросов
 
 # --- Environment Variables ---
 try:
@@ -244,7 +246,7 @@ async def send_handler(message: types.Message):
             await message.reply('Отправка сообщений доступна только администратору')
             return
 
-        if not (START_TIME <= now <= END_TIME):
+        if not (START_TIME <= now <= END_TIME) and CHECK_TIME:
             await message.reply(f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
             return
 
