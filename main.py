@@ -240,7 +240,11 @@ async def send_handler(message: types.Message):
     try:
         # Check time
         now = datetime.now().time()
-        if message.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
+        if message.from_user.id != ADMIN_USER_ID:
+            await message.reply('Отправка сообщений доступна только администратору')
+            return
+
+        if not (START_TIME <= now <= END_TIME):
             await message.reply(f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
             return
 
