@@ -242,7 +242,7 @@ async def send_handler(message: types.Message):
     try:
         # Check time
         now = datetime.now().time()
-        if message.from_user.id != ADMIN_USER_ID:
+        if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
             await message.reply('Отправка сообщений доступна только администратору')
             return
 
