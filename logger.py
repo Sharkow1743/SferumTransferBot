@@ -1,6 +1,6 @@
 import logging
 from logging.handlers import RotatingFileHandler
-import sys
+from sys import stdout
 
 # Custom Formatter to exclude tracebacks for the console
 class ConsoleFormatterWithNoTraceback(logging.Formatter):
@@ -25,6 +25,7 @@ class ConsoleFormatterWithNoTraceback(logging.Formatter):
         if original_exc_info:
             # original_exc_info is a tuple (type, value, traceback)
             exception_type, exception_value, _ = original_exc_info
+            assert exception_type
             formatted_message += f": {exception_type.__name__}: {exception_value}"
 
         # Restore the original exception info for any other handlers
@@ -38,8 +39,7 @@ def setup_logger():
     api_log_file = 'data/api_responses.log'
 
     try:
-        with open(log_file, 'w'):
-            pass
+        open(log_file, 'x').close()
     except IOError as e:
         print(f"Warning: Could not clear log file - {e}")
 
@@ -47,16 +47,16 @@ def setup_logger():
     logger.setLevel(logging.DEBUG)
 
     # --- Formatters ---
-    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-    console_formatter = ConsoleFormatterWithNoTraceback('%(asctime)s - %(levelname)s - %(message)s')
-    api_formatter = logging.Formatter('%(asctime)s - %(message)s')
+    file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', "%Y-%m-%d %H:%M:%S")
+    console_formatter = ConsoleFormatterWithNoTraceback('%(asctime)s [%(levelname)s]: %(message)s', "%Y-%m-%d %H:%M:%S")
+    api_formatter = logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%S")
 
     # --- Handlers ---
 
     # Main log file handler (logs everything, including API logs)
     file_handler = RotatingFileHandler(
         log_file,
-        maxBytes=1*1024*1024,
+        maxBytes=1024 * 1024,
         backupCount=1,
         encoding='utf-8'
     )
@@ -66,7 +66,7 @@ def setup_logger():
     logger.addHandler(file_handler)
 
     # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(stdout)
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(logging.INFO)
     console_handler.addFilter(lambda record: record.name != 'api_logger')
@@ -75,7 +75,7 @@ def setup_logger():
     # API response handler (separate file)
     api_handler = RotatingFileHandler(
         api_log_file,
-        maxBytes=1*1024*1024,
+        maxBytes=1024 * 1024,
         backupCount=3,
         encoding='utf-8'
     )
@@ -91,6 +91,7 @@ def setup_logger():
     # Suppress verbose logs from libraries
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("TeleBot").setLevel(logging.WARNING)
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
+    logging.getLogger("pymax.core").setLevel(logging.WARNING)
 
     return logger, api_logger

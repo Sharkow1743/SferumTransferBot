@@ -1,66 +1,59 @@
-# Standard Library Imports
-import os
-import sys
-import asyncio
+from os import name as os_name, getenv
+from asyncio import run, wait, create_task, FIRST_COMPLETED, Event, get_running_loop, Task
+from typing import cast
 import logging
 import signal
 from datetime import datetime, time as t
 from io import BytesIO
 
-# Third-party Imports
 import aiohttp
-import colorama
 from dotenv import load_dotenv
-from colorama import Fore, Style
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile
-from aiogram.exceptions import TelegramBadRequest
 
-# PyMax Imports
 from pymax import SocketMaxClient, MaxClient, Message
 from pymax.types import FileAttach, PhotoAttach, VideoAttach
 
-# Local Application Imports
 import data_handler
 import logger
 
 # --- Initial Setup ---
 logger.setup_logger()
-api_logger = logging.getLogger("api_logger")
-colorama.init(autoreset=True)
+logging.getLogger("api_logger")
 load_dotenv()
 
 # --- Constants & Configuration ---
 START_TIME = t(7, 0)
 END_TIME = t(22, 0)
-BOT_POST_MESSAGE = "" 
+BOT_POST_MESSAGE = ""
 BOT_MESSAGE_PREFIX = "⫻"
-BOT_START_MESSAGE = "" 
+BOT_START_MESSAGE = None
 
 REQUESTS_TIMEOUT = 15
 
 # --- Environment Variables ---
 try:
-    USE_SOCKET_CLIENT = os.getenv('USE_SOCKET_CLIENT', 'false')
-    USE_SOCKET_CLIENT = True if USE_SOCKET_CLIENT.lower() == 'true' else False
-    MAX_PHONE = os.getenv('VK_PHONE')
-    MAX_CHAT_ID = int(os.getenv('VK_CHAT_ID'))
-    MAX_TOKEN = os.getenv('VK_COOKIE')
-    TG_CHAT_ID = os.getenv('TG_CHAT_ID')
-    TG_TOKEN = os.getenv('TG_TOKEN')
-    ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', 0))
+    USE_SOCKET_CLIENT = eval(getenv('USE_SOCKET_CLIENT', 'False').title())
+    MAX_PHONE = getenv('VK_PHONE')
+    MAX_CHAT_ID = int(getenv('VK_CHAT_ID', 0))
+    MAX_TOKEN = getenv('VK_COOKIE')
+    TG_CHAT_ID = int(getenv('TG_CHAT_ID', 0))
+    TG_TOKEN = getenv('TG_TOKEN')
+    ADMIN_USER_ID = int(getenv('ADMIN_USER_ID', 0))
     if not all([MAX_CHAT_ID, TG_CHAT_ID, TG_TOKEN, MAX_TOKEN, MAX_PHONE]):
         raise ValueError("One or more environment variables are not set.")
+
+    assert TG_TOKEN
+    assert MAX_PHONE
 except (ValueError, TypeError) as e:
     logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
-    sys.exit(1)
+    quit(1)
 
-# --- State ---
 msgs_map = data_handler.load('msgs') or {}
 last_sender_id = None
 
-# --- API Initialization ---
+
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
 
@@ -70,13 +63,12 @@ if USE_SOCKET_CLIENT:
 else:
     client = MaxClient(MAX_PHONE, token=MAX_TOKEN, work_dir="data/cache", reconnect=True)
 
-
 # --- Helper Functions ---
 
 async def download_content(url: str) -> BytesIO:
     """Download content from URL into memory."""
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=REQUESTS_TIMEOUT) as response:
+        async with session.get(url, timeout=REQUESTS_TIMEOUT) as response: # pyright: ignore[reportArgumentType]
             response.raise_for_status()
             content = await response.read()
             file_bytes = BytesIO(content)
@@ -89,7 +81,7 @@ async def get_sender_name(user_id: int) -> str:
     try:
         user = await client.get_user(user_id=user_id)
         if user and user.names:
-            return user.names[0].name
+            return user.names[0].name or ''
     except Exception as e:
         logging.error(f"Could not fetch profile for ID {user_id}: {e}")
     return f"User {user_id}"
@@ -116,7 +108,9 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
     Handles messages. Returns the Telegram Message ID of the first part sent.
     """
     global last_sender_id
-    
+    assert message.sender
+    assert message.chat_id
+
     # 1. Top-level filter
     if not forwarded and message.chat_id != MAX_CHAT_ID:
         return None
@@ -131,7 +125,7 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
 
     try:
         sender_name, gender_suffix = await get_smart_sender_info(message.sender)
-        
+
         # 2. Header Logic
         if not forwarded and last_sender_id != message.sender:
             header_text = f"{BOT_MESSAGE_PREFIX} *{sender_name} написа{gender_suffix}:*"
@@ -151,8 +145,8 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
         fwds_to_process = []
         if message.link and message.link.type == 'FORWARD':
             fwds_to_process.append(message.link.message)
-        if hasattr(message, 'fwd_messages') and message.fwd_messages:
-            fwds_to_process.extend(message.fwd_messages)
+        if hasattr(message, 'fwd_messages') and message.fwd_messages: # pyright: ignore[reportAttributeAccessIssue]
+            fwds_to_process.extend(message.fwd_messages) # pyright: ignore[reportAttributeAccessIssue]
 
         for fwd_msg in fwds_to_process:
             # Recursive call returns the TG ID of the forwarded message
@@ -164,8 +158,8 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
         # 5. Content Prep
         text_content = message.text or ""
         if forwarded:
-            text_content = f"↪S_Переслано от {sender_name}:_\n{text_content}"
-        
+            text_content = f"↪ Переслано от {sender_name}:_\n{text_content}"
+
         # 6. Attachments
         if message.attaches:
             for attach in message.attaches:
@@ -240,24 +234,25 @@ async def max_message_handler(message: Message):
 # --- Logic: Telegram -> Max ---
 
 @dp.message(Command("send"))
-async def send_handler(msg: types.Message):
+async def send_handler(message: types.Message):
     """Handles /send command."""
+    assert message.from_user
     try:
         # Check time
         now = datetime.now().time()
-        if msg.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
-            await msg.reply(f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
+        if message.from_user.id != ADMIN_USER_ID and not (START_TIME <= now <= END_TIME):
+            await message.reply(f"Можно отправлять сообщения только между {START_TIME:%H:%M} и {END_TIME:%H:%M}")
             return
-        
+
         # Check empty message
-        text_to_send = msg.text.replace("/send", "", 1).strip()
+        text_to_send = (message.text or '').replace("/send", "", 1).strip()
         if not text_to_send:
-            await msg.reply("Нельзя отправить пустое сообщение.")
+            await message.reply("Нельзя отправить пустое сообщение.")
             return
-        
+
         # Get username
-        username = msg.from_user.full_name or msg.from_user.username
-        
+        username = message.from_user.full_name or message.from_user.username
+
         # Create full text
         full_text = f"{BOT_MESSAGE_PREFIX} *{username} написал(-а):*\n{text_to_send}"
         if BOT_POST_MESSAGE:
@@ -265,8 +260,8 @@ async def send_handler(msg: types.Message):
 
         # Get id of replied message in MAX
         reply_to_max_id = None
-        if msg.reply_to_message:
-            tg_reply_id = msg.reply_to_message.message_id
+        if message.reply_to_message:
+            tg_reply_id = message.reply_to_message.message_id
             # Reverse lookup
             for mid, tid in msgs_map.items():
                 if tid == tg_reply_id:
@@ -275,78 +270,80 @@ async def send_handler(msg: types.Message):
 
         # Send message
         sent_msg = await client.send_message(
-            chat_id=MAX_CHAT_ID, 
-            text=full_text, 
-            reply_to=reply_to_max_id 
+            chat_id=MAX_CHAT_ID,
+            text=full_text,
+            reply_to=reply_to_max_id
         )
 
         # Map message
         if sent_msg and sent_msg.id:
-            msgs_map[str(sent_msg.id)] = msg.message_id
-            await msg.reply("Отправлено!")
+            msgs_map[str(sent_msg.id)] = message.message_id
+            await message.reply("Отправлено!")
 
     except Exception as e:
         logging.error(f"Error in send_handler: {e}", exc_info=True)
-        await msg.reply('Произошла ошибка при отправке.')
+        await message.reply('Произошла ошибка при отправке.')
 
 # --- Lifecycle ---
 
 async def on_startup():
     logging.info("Bot started. Transfer is active.")
-    
+
     # Send startup message (invite link) logic
     if BOT_START_MESSAGE and not data_handler.load("started"):
         try:
             invite = await bot.create_chat_invite_link(TG_CHAT_ID)
             msg = BOT_START_MESSAGE.replace("TG_CHAT_INVITE_LINK", invite.invite_link)
-            await client.send_message(MAX_CHAT_ID, msg)
+            await client.send_message(msg, MAX_CHAT_ID)
             data_handler.save("started", True)
         except Exception as e:
             logging.error(f"Failed to send startup message: {e}")
 
 async def main():
     # 1. Setup Signal Handling
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    if os.name != 'nt': 
+    stop_event = Event()
+    loop = get_running_loop()
+    if os_name != 'nt':
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop_event.set)
 
     # 2. Start Telegram Poller FIRST (as a background task)
     logging.info("Starting Telegram Polling...")
     # This creates the task but doesn't block execution
-    tg_task = asyncio.create_task(dp.start_polling(bot))
+    tg_task = create_task(dp.start_polling(bot))
 
     # 3. Run startup logic (invite links, etc.)
     await on_startup()
 
     # 4. Start Max Client (This blocks and keeps the script alive)
     logging.info("Initializing Max Client...")
+    max_task = create_task(client.start())
+
     try:
         # We use a task for Max as well to allow clean shutdowns
-        max_task = asyncio.create_task(client.start())
-        
         # Wait for either the stop signal or the tasks to fail
-        done, pending = await asyncio.wait(
-            [tg_task, max_task, await stop_event.wait()],
-            return_when=asyncio.FIRST_COMPLETED
+        await wait(
+            [tg_task, max_task, cast(Task, await stop_event.wait())],
+            return_when=FIRST_COMPLETED
         )
+
     except Exception as e:
         logging.error(f"Critical error in main loop: {e}")
+
     finally:
         logging.info("Shutting down...")
         data_handler.save('msgs', msgs_map)
-        
+
         # Clean up tasks
         tg_task.cancel()
         max_task.cancel()
-        
+
         await client.close()
         await bot.session.close()
         logging.info("Shutdown complete.")
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped.")
