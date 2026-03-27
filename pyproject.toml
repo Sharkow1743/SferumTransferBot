@@ -8,4 +8,5 @@ dependencies = [
     "aiogram>=3.26.0",
     "maxapi-python>=1.2.5",
     "python-dotenv>=1.2.2",
+    "requests>=2.33.0",
 ]
