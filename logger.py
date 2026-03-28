@@ -92,6 +92,6 @@ def setup_logger():
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("aiogram").setLevel(logging.WARNING)
-    logging.getLogger("pymax.core").setLevel(logging.WARNING)
+    logging.getLogger("pymax.core").setLevel(logging.INFO)
 
     return logger, api_logger

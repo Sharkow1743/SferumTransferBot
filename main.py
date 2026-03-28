@@ -1,7 +1,6 @@
 from os import name as os_name, getenv
-from asyncio import run, wait, create_task, FIRST_COMPLETED, Event, get_running_loop, Task
-from typing import cast
-import logging
+from asyncio import run, wait, create_task, FIRST_COMPLETED, Event, get_running_loop
+from logging import getLogger
 import signal
 from datetime import datetime, time as t
 from io import BytesIO
@@ -16,11 +15,11 @@ from pymax import SocketMaxClient, MaxClient, Message
 from pymax.types import FileAttach, PhotoAttach, VideoAttach
 
 import data_handler
-import logger
+from logger import setup_logger
 
 # --- Initial Setup ---
-logger.setup_logger()
-logging.getLogger("api_logger")
+setup_logger()
+l = getLogger("api_logger")
 load_dotenv()
 
 # --- Constants & Configuration ---
@@ -49,7 +48,7 @@ try:
     assert TG_TOKEN
     assert MAX_PHONE
 except (ValueError, TypeError) as e:
-    logging.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
+    l.critical(f"FATAL: Configuration error - {e}. Please check your .env file.")
     quit(1)
 
 msgs_map = data_handler.load('msgs') or {}
@@ -85,7 +84,7 @@ async def get_sender_name(user_id: int) -> str:
         if user and user.names:
             return user.names[0].name or ''
     except Exception as e:
-        logging.error(f"Could not fetch profile for ID {user_id}: {e}")
+        l.error(f"Could not fetch profile for ID {user_id}: {e}")
     return f"User {user_id}"
 
 # --- Logic: Max -> Telegram ---
@@ -100,7 +99,7 @@ async def get_smart_sender_info(user_id: int):
             suffix = "ла" if user.gender == 1 else "л"
             return name, suffix
     except Exception as e:
-        logging.error(f"Error fetching user {user_id}: {e}")
+        l.error(f"Error fetching user {user_id}: {e}")
     return f"User {user_id}", "л(-а)"
 
 # --- Logic: Max -> Telegram ---
@@ -114,13 +113,14 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
     assert message.chat_id
 
     # 1. Top-level filter
+    l.debug(message)
     if not forwarded and message.chat_id != MAX_CHAT_ID:
         return None
     if message.text and message.text.startswith(BOT_MESSAGE_PREFIX):
         return None
 
     msg_id_str = str(message.id) if message.id else "FWD_PART"
-    logging.info(f"Processing Max Message ID: {msg_id_str} (Forwarded: {forwarded})")
+    l.info(f"Processing Max Message ID: {msg_id_str} (Forwarded: {forwarded})")
 
     # This will track the FIRST Telegram ID associated with this Max message
     first_tg_id = None
@@ -141,7 +141,7 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
             replied_max_id = str(message.link.message.id)
             reply_to_tg_id = msgs_map.get(replied_max_id)
             if reply_to_tg_id:
-                logging.info(f"Reply Link: Max[{replied_max_id}] -> TG[{reply_to_tg_id}]")
+                l.info(f"Reply Link: Max[{replied_max_id}] -> TG[{reply_to_tg_id}]")
 
         # 4. Forward Recursion
         fwds_to_process = []
@@ -203,7 +203,7 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
                         if first_tg_id is None: first_tg_id = sent.message_id
                         text_content = "" # Only send caption once
                 except Exception as e:
-                    logging.error(f"Attachment error: {e}")
+                    l.error(f"Attachment error: {e}")
 
         # 7. Remaining Text
         if text_content.strip():
@@ -220,12 +220,12 @@ async def process_max_message(message: Message, forwarded: bool = False) -> int 
         if first_tg_id and message.id:
             msgs_map[str(message.id)] = first_tg_id
             data_handler.save('msgs', msgs_map)
-            logging.info(f"Mapping Saved: Max[{message.id}] == TG[{first_tg_id}]")
+            l.info(f"Mapping Saved: Max[{message.id}] == TG[{first_tg_id}]")
 
         return first_tg_id
 
     except Exception as e:
-        logging.error(f"Error: {e}", exc_info=True)
+        l.error(f"Error: {e}", exc_info=True)
         return None
 
 @client.on_message()
@@ -287,13 +287,13 @@ async def send_handler(message: types.Message):
             await message.reply("Отправлено!")
 
     except Exception as e:
-        logging.error(f"Error in send_handler: {e}", exc_info=True)
+        l.error(f"Error in send_handler: {e}", exc_info=True)
         await message.reply('Произошла ошибка при отправке.')
 
 # --- Lifecycle ---
 
 async def on_startup():
-    logging.info("Bot started. Transfer is active.")
+    l.info("Bot started. Transfer is active.")
 
     # Send startup message (invite link) logic
     if BOT_START_MESSAGE and not data_handler.load("started"):
@@ -303,7 +303,7 @@ async def on_startup():
             await client.send_message(msg, MAX_CHAT_ID)
             data_handler.save("started", True)
         except Exception as e:
-            logging.error(f"Failed to send startup message: {e}")
+            l.error(f"Failed to send startup message: {e}")
 
 async def main():
     # 1. Setup Signal Handling
@@ -314,7 +314,7 @@ async def main():
             loop.add_signal_handler(sig, stop_event.set)
 
     # 2. Start Telegram Poller FIRST (as a background task)
-    logging.info("Starting Telegram Polling...")
+    l.info("Starting Telegram Polling...")
     # This creates the task but doesn't block execution
     tg_task = create_task(dp.start_polling(bot))
 
@@ -322,22 +322,24 @@ async def main():
     await on_startup()
 
     # 4. Start Max Client (This blocks and keeps the script alive)
-    logging.info("Initializing Max Client...")
+    l.info("Initializing Max Client...")
     max_task = create_task(client.start())
+    l.debug('inited')
 
     try:
         # We use a task for Max as well to allow clean shutdowns
         # Wait for either the stop signal or the tasks to fail
+        stop_task = create_task(stop_event.wait())
         await wait(
-            [tg_task, max_task, cast(Task, await stop_event.wait())],
+            [tg_task, max_task, stop_task],
             return_when=FIRST_COMPLETED
         )
 
     except Exception as e:
-        logging.error(f"Critical error in main loop: {e}")
+        l.error(f"Critical error in main loop: {e}")
 
     finally:
-        logging.info("Shutting down...")
+        l.info("Shutting down...")
         data_handler.save('msgs', msgs_map)
 
         # Clean up tasks
@@ -346,10 +348,10 @@ async def main():
 
         await client.close()
         await bot.session.close()
-        logging.info("Shutdown complete.")
+        l.info("Shutdown complete.")
 
 if __name__ == '__main__':
     try:
         run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot stopped.")
+        l.info("Bot stopped.")
