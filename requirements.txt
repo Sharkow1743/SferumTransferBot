@@ -1,4 +1,4 @@
 aiogram
 aiohttp
-maxapi-python
+maxapi-python==1.2.5
 python-dotenv
