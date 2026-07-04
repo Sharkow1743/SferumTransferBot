@@ -1,6 +1,6 @@
 # Sferum Transfer Bot
 
-> [!DANGER]
+> [!CAUTION]
 > Может блокировать аккаунт [#10](https://github.com/Sharkow1743/SferumTransferBot/issues/10#issue-3961856910)
 
 Бот для пересылки сообщений из Max в Telegram.
@@ -11,7 +11,7 @@
     - [x] Текст
     - [x] Картинки
     - [x] Файлы
-    - [x] Видео
+    - [x] Видеоdocs_link.png
     - [x] Пересылания
     - [x] Ответы
     - [ ] Форматирование текста
@@ -55,7 +55,7 @@ cp .env.example .env
 #### VK_CHAT_ID
 Зайдите на сайт макса, откройте любой чат, в адресной строке будет url такого формата:
 `https://web.max.ru/ID_ЧАТА`
-![пример ссылки](1774541172.png)
+![пример ссылки](docs_link.png)
 
 #### TG_TOKEN
 Создайте бота через @BotFather и получите токен.
